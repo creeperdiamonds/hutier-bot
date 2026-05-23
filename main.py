@@ -317,6 +317,10 @@ TICKET_TYPES = [
     ("ShieldlessUHC", "shieldlessuhc", 1469766017243807865),
     ("SpearMace", "spearmace", 1469968704203788425),
     ("SpearElytra", "spearelytra", 1469968762575912970),
+    # --- Added gamemodes: replace 0s with real Discord tester role IDs ---
+    ("DiaPot", "diapot", 0),
+    ("NethSMP", "nethsmp", 0),
+    ("Crystal", "crystal", 0),
 ]
 
 # Required rounds for each gamemode (FT = First to, LT = Last to)
@@ -339,6 +343,9 @@ TICKET_ROUNDS = {
     "axe": ("FT20", "FT10", None),
     "spearmace": ("FT6", "FT3", None),
     "spearelytra": ("FT6", "FT3", None),
+    "diapot": ("FT4", "FT2", None),
+    "nethsmp": ("FT4", "FT3", "FT2"),  # FT2 if lose round
+    "crystal": ("FT4", "FT3", None),
 }
 
 
@@ -405,6 +412,9 @@ GAMEMODE_DISPLAY_NAMES = {
     "shieldlessuhc": "ShieldlessUHC",
     "spearmace": "SpearMace",
     "spearelytra": "SpearElytra",
+    "diapot": "DiaPot",
+    "nethsmp": "NethSMP",
+    "crystal": "Crystal",
 }
 
 def normalize_gamemode(mode: str) -> str:
@@ -441,6 +451,9 @@ GAMEMODE_COLORS = {
     "shieldlessuhc": 0xd35400,  # Dark Orange
     "spearmace": 0x16a085,    # Dark Teal
     "spearelytra": 0x2980b9,   # Dark Blue
+    "diapot": 0x00bcd4,       # Cyan (diamond)
+    "nethsmp": 0x8b0000,      # Dark Red (nether)
+    "crystal": 0x9b59b6,      # Purple (end crystal)
 }
 
 GAMEMODE_INDICATORS = {
@@ -459,6 +472,9 @@ GAMEMODE_INDICATORS = {
     "shieldlessuhc": "🟠",
     "spearmace": "🟢",
     "spearelytra": "🔵",
+    "diapot": "🩵",
+    "nethsmp": "🟥",
+    "crystal": "🟣",
 }
 
 
@@ -2013,6 +2029,10 @@ QUEUE_CHANNELS = {
     "spearmace": 1495038999876600008,
     "shieldlessuhc": 1495039115119296572,
     "ogvanilla": 1495039145330872341,
+    # --- Added gamemodes: replace 0s with real Discord queue channel IDs ---
+    "diapot": 0,
+    "nethsmp": 0,
+    "crystal": 0,
 }
 
 # Ping role IDs for each gamemode
@@ -2032,6 +2052,10 @@ QUEUE_PING_ROLES = {
     "ogvanilla": 1495044664502386698,
     "spearelytra": 1495044732680667247,
     "spearmace": 1495044798472781944,
+    # --- Added gamemodes: replace 0s with real Discord ping role IDs ---
+    "diapot": 0,
+    "nethsmp": 0,
+    "crystal": 0,
 }
 
 # Category where ticket channels will be created
