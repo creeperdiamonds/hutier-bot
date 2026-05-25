@@ -7,7 +7,7 @@ import discord
 
 from config import WEBSITE_URL, BOT_API_KEY, HTTP_TIMEOUT_SECONDS
 from config import get_gamemode_display_name
-from database import db_pool, USE_SUPABASE_API, supabase_upsert, db_upsert_test
+from database import db_upsert_test, db_select
 
 # Module-level http session — set by main before bot starts
 http_session: Optional[aiohttp.ClientSession] = None
@@ -47,37 +47,20 @@ async def api_get_tests(username: str, mode: str) -> Dict[str, Any]:
 async def api_post_test(username: str, mode: str, rank: str, tester: discord.Member, account_type: str = None) -> Dict[str, Any]:
     mode_for_api = get_gamemode_display_name(mode)
 
-    # Primary: Direct PostgreSQL upsert (atomic ON CONFLICT) – most reliable
-    if db_pool is not None:
-        print(f"[API_POST_TEST] DB upsert: {username}/{mode_for_api}")
-        success = await db_upsert_test(
-            username=username,
-            mode=mode_for_api,
-            rank=rank,
-            tester_id=str(tester.id),
-            tester_name=tester.display_name,
-            ts=int(time.time()),
-            account_type=account_type
-        )
-        if success:
-            return {"status": 200, "data": {"success": True}}
-        print("DB upsert failed, falling back")
-
-    # Secondary: Supabase REST upsert
-    if USE_SUPABASE_API:
-        print(f"[API_POST_TEST] Supabase upsert: {username}/{mode_for_api}")
-        payload_sb = {
-            "username": username,
-            "mode": mode_for_api,
-            "rank": rank,
-            "testerId": str(tester.id),
-            "testerName": tester.display_name,
-            "ts": int(time.time()),
-            "accountType": account_type,
-        }
-        if await supabase_upsert("tests", payload_sb):
-            return {"status": 200, "data": {"success": True}}
-        print("Supabase upsert failed, falling back")
+    # Primary: SQLite upsert
+    print(f"[API_POST_TEST] DB upsert: {username}/{mode_for_api}")
+    success = await db_upsert_test(
+        username=username,
+        mode=mode_for_api,
+        rank=rank,
+        tester_id=str(tester.id),
+        tester_name=tester.display_name,
+        ts=int(time.time()),
+        account_type=account_type
+    )
+    if success:
+        return {"status": 200, "data": {"success": True}}
+    print("DB upsert failed, falling back to website API")
 
     # Fallback: Website API – check existence first, then either PUT or POST
     if not WEBSITE_URL:
@@ -144,68 +127,34 @@ async def api_post_test(username: str, mode: str, rank: str, tester: discord.Mem
 
 async def api_get_player_tiers(username: str) -> Dict[str, Any]:
     """Get all tier results for a player across every gamemode. Returns {mode: rank} dict."""
-    from database import USE_SUPABASE_API, supabase_select
     from config import POINTS
-
-    if USE_SUPABASE_API:
-        try:
-            rows = await supabase_select("tests", {"username": username})
-            if rows is not None:
-                tiers = {r["mode"]: r["rank"] for r in rows if "mode" in r and "rank" in r}
-                best = max(tiers.values(), key=lambda r: POINTS.get(r, 0), default="Unranked") if tiers else "Unranked"
-                best_mode = next((m for m, r in tiers.items() if r == best), None)
-                return {"status": 200, "data": {"tiers": tiers, "highest": best, "highest_gamemode": best_mode}}
-        except Exception as e:
-            print(f"[API] Supabase player tiers error: {e}")
-
-    if db_pool is not None:
-        try:
-            async with db_pool.acquire() as conn:
-                rows = await conn.fetch(
-                    "SELECT mode, rank FROM tests WHERE LOWER(username) = LOWER($1)", username
-                )
-                tiers = {r["mode"]: r["rank"] for r in rows}
-                best = max(tiers.values(), key=lambda r: POINTS.get(r, 0), default="Unranked") if tiers else "Unranked"
-                best_mode = next((m for m, r in tiers.items() if r == best), None)
-                return {"status": 200, "data": {"tiers": tiers, "highest": best, "highest_gamemode": best_mode}}
-        except Exception as e:
-            print(f"[API] DB player tiers error: {e}")
-
-    return {"status": 404, "data": {"error": "No database configured"}}
+    try:
+        rows = await db_select("tests", {"username": username})
+        tiers = {r["mode"]: r["rank"] for r in rows if "mode" in r and "rank" in r}
+        best = max(tiers.values(), key=lambda r: POINTS.get(r, 0), default="Unranked") if tiers else "Unranked"
+        best_mode = next((m for m, r in tiers.items() if r == best), None)
+        return {"status": 200, "data": {"tiers": tiers, "highest": best, "highest_gamemode": best_mode}}
+    except Exception as e:
+        print(f"[API] player tiers error: {e}")
+    return {"status": 404, "data": {"error": "Not found"}}
 
 
 async def api_get_gamemode_leaderboard(gamemode: str) -> Dict[str, Any]:
     """Get all players ranked in a specific gamemode, sorted by rank."""
-    from database import USE_SUPABASE_API, supabase_select
     from config import POINTS
 
     mode_display = get_gamemode_display_name(gamemode)
-
-    if USE_SUPABASE_API:
-        try:
-            rows = await supabase_select("tests", {"mode": mode_display})
-            if rows is not None:
-                players = sorted(
-                    [{"username": r["username"], "rank": r["rank"]} for r in rows if "username" in r],
-                    key=lambda p: POINTS.get(p["rank"], 0),
-                    reverse=True,
-                )
-                return {"status": 200, "data": {"gamemode": mode_display, "players": players}}
-        except Exception as e:
-            print(f"[API] Supabase leaderboard error: {e}")
-
-    if db_pool is not None:
-        try:
-            async with db_pool.acquire() as conn:
-                rows = await conn.fetch(
-                    "SELECT username, rank FROM tests WHERE LOWER(mode) = LOWER($1)", mode_display
-                )
-                players = [{"username": r["username"], "rank": r["rank"]} for r in rows]
-                return {"status": 200, "data": {"gamemode": mode_display, "players": players}}
-        except Exception as e:
-            print(f"[API] DB leaderboard error: {e}")
-
-    return {"status": 404, "data": {"error": "No database configured"}}
+    try:
+        rows = await db_select("tests", {"mode": mode_display})
+        players = sorted(
+            [{"username": r["username"], "rank": r["rank"]} for r in rows if "username" in r],
+            key=lambda p: POINTS.get(p["rank"], 0),
+            reverse=True,
+        )
+        return {"status": 200, "data": {"gamemode": mode_display, "players": players}}
+    except Exception as e:
+        print(f"[API] leaderboard error: {e}")
+    return {"status": 404, "data": {"error": "Not found"}}
 
 
 async def api_rename_player(old_name: str, new_name: str) -> Dict[str, Any]:
