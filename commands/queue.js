@@ -129,7 +129,7 @@ const commands = {
   queuepanel: {
     data: new SlashCommandBuilder()
       .setName('queuepanel')
-      .setDescription('Post queue panel with Open buttons for each gamemode (staff only)'),
+      .setDescription('Post an Open Queue button in each gamemode\'s dedicated channel (staff only)'),
 
     async execute(interaction) {
       await interaction.deferReply({ ephemeral: true });
@@ -137,38 +137,42 @@ const commands = {
         return interaction.editReply('❌ Staff only.');
       }
 
-      const embed = new EmbedBuilder()
-        .setTitle('Queue Panel')
-        .setDescription('Open a queue for your gamemode by clicking the button below.')
-        .setColor(0x5865F2)
-        .addFields(
-          { name: 'Info', value: 'Click a button to open a queue for that gamemode.', inline: false },
-        );
-
-      // Build rows of buttons (max 5 per row, max 5 rows = 25 buttons)
-      const rows = [];
-      let currentRow = new ActionRowBuilder();
-      let count = 0;
+      const guild = interaction.guild;
+      const posted = [];
+      const skipped = [];
 
       for (const gm of GAMEMODES) {
-        if (count > 0 && count % 5 === 0) {
-          if (rows.length >= 4) break; // Discord max 5 rows
-          rows.push(currentRow);
-          currentRow = new ActionRowBuilder();
-        }
-        currentRow.addComponents(
-          new ButtonBuilder()
-            .setCustomId(`queue_open:${gm.toLowerCase()}`)
-            .setLabel(gm)
-            .setStyle(ButtonStyle.Primary)
-        );
-        count++;
-      }
-      if (count % 5 !== 0 || count === 0) rows.push(currentRow);
+        const modeKey = gm.toLowerCase();
+        const channelId = QUEUE_CHANNELS[modeKey];
+        if (!channelId) { skipped.push(gm); continue; }
 
-      const msg = await interaction.channel.send({ embeds: [embed], components: rows });
-      storage.setQueuePanelMessage(interaction.channel.id, msg.id);
-      await interaction.editReply('✅ Queue panel posted!');
+        const channel = guild.channels.cache.get(channelId);
+        if (!channel || !channel.isTextBased()) { skipped.push(gm); continue; }
+
+        const embed = new EmbedBuilder()
+          .setTitle(`${gm} Queue`)
+          .setDescription('Testers: click below to open the queue.\nPlayers: click **Join Queue** once it\'s open.')
+          .setColor(getGamemodeColor(modeKey));
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`queue_open:${modeKey}`)
+            .setLabel(`Open ${gm} Queue`)
+            .setStyle(ButtonStyle.Primary),
+        );
+
+        try {
+          await channel.send({ embeds: [embed], components: [row] });
+          posted.push(gm);
+        } catch (e) {
+          skipped.push(gm);
+          console.error(`[Queue] Failed to post panel in ${gm} channel:`, e.message);
+        }
+      }
+
+      let reply = `✅ Posted panels in **${posted.length}** channels: ${posted.join(', ')}`;
+      if (skipped.length) reply += `\n⚠️ Skipped (no channel or no access): ${skipped.join(', ')}`;
+      await interaction.editReply(reply);
     },
   },
 
