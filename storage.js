@@ -170,6 +170,149 @@ function unbanPlayer(username) {
   return false;
 }
 
+// Queue waitlist (ordered array of player user IDs)
+function getQueue(gamemode) {
+  const data = loadData();
+  return (data.queues || {})[gamemode] || [];
+}
+function addToQueue(gamemode, userId) {
+  const data = loadData();
+  if (!data.queues) data.queues = {};
+  if (!data.queues[gamemode]) data.queues[gamemode] = [];
+  if (!data.queues[gamemode].includes(String(userId))) data.queues[gamemode].push(String(userId));
+  saveData(data);
+}
+function removeFromQueue(gamemode, userId) {
+  const data = loadData();
+  if (!data.queues?.[gamemode]) return;
+  data.queues[gamemode] = data.queues[gamemode].filter(id => id !== String(userId));
+  saveData(data);
+}
+function clearQueue(gamemode) {
+  const data = loadData();
+  if (!data.queues) data.queues = {};
+  data.queues[gamemode] = [];
+  saveData(data);
+}
+function getQueuePosition(gamemode, userId) {
+  return getQueue(gamemode).indexOf(String(userId));
+}
+
+// Active testers per gamemode (list of tester IDs on duty)
+function getActiveTesters(gamemode) {
+  const data = loadData();
+  return (data.active_testers || {})[gamemode] || [];
+}
+function addActiveTester(gamemode, testerId) {
+  const data = loadData();
+  if (!data.active_testers) data.active_testers = {};
+  if (!data.active_testers[gamemode]) data.active_testers[gamemode] = [];
+  if (!data.active_testers[gamemode].includes(String(testerId))) data.active_testers[gamemode].push(String(testerId));
+  saveData(data);
+}
+function removeActiveTester(gamemode, testerId) {
+  const data = loadData();
+  if (!data.active_testers?.[gamemode]) return;
+  data.active_testers[gamemode] = data.active_testers[gamemode].filter(id => id !== String(testerId));
+  saveData(data);
+}
+function clearActiveTesters(gamemode) {
+  const data = loadData();
+  if (!data.active_testers) data.active_testers = {};
+  data.active_testers[gamemode] = [];
+  saveData(data);
+}
+
+// Active session (one per gamemode at a time)
+function getActiveSession(gamemode) {
+  const data = loadData();
+  return (data.active_sessions || {})[gamemode] || null;
+}
+function setActiveSession(gamemode, testerId, playerId, channelId) {
+  const data = loadData();
+  if (!data.active_sessions) data.active_sessions = {};
+  data.active_sessions[gamemode] = { tester_id: String(testerId), player_id: String(playerId), channel_id: String(channelId) };
+  saveData(data);
+}
+function clearActiveSession(gamemode) {
+  const data = loadData();
+  if (!data.active_sessions) return;
+  delete data.active_sessions[gamemode];
+  saveData(data);
+}
+function findActiveSessionByChannel(channelId) {
+  const data = loadData();
+  for (const [gm, session] of Object.entries(data.active_sessions || {})) {
+    if (session.channel_id === String(channelId)) return { gamemode: gm, ...session };
+  }
+  return null;
+}
+
+// Queue region
+function getQueueRegion(gamemode) {
+  const data = loadData();
+  return (data.queue_regions || {})[gamemode] || null;
+}
+function setQueueRegion(gamemode, region) {
+  const data = loadData();
+  if (!data.queue_regions) data.queue_regions = {};
+  data.queue_regions[gamemode] = region;
+  saveData(data);
+}
+function clearQueueRegion(gamemode) {
+  const data = loadData();
+  if (data.queue_regions) delete data.queue_regions[gamemode];
+  saveData(data);
+}
+
+// Closed message (the edited-in-place "closed" embed message)
+function getClosedMessage(gamemode) {
+  const data = loadData();
+  return (data.closed_messages || {})[gamemode] || null;
+}
+function saveClosedMessage(gamemode, channelId, messageId) {
+  const data = loadData();
+  if (!data.closed_messages) data.closed_messages = {};
+  data.closed_messages[gamemode] = { channel_id: String(channelId), message_id: String(messageId) };
+  saveData(data);
+}
+function clearClosedMessage(gamemode) {
+  const data = loadData();
+  if (data.closed_messages) delete data.closed_messages[gamemode];
+  saveData(data);
+}
+
+// Last session timestamp
+function getLastSession(gamemode) {
+  const data = loadData();
+  const ts = (data.last_sessions || {})[gamemode];
+  if (!ts) return null;
+  try { return new Date(ts).toUTCString().replace(' GMT', ' UTC'); } catch { return null; }
+}
+function saveLastSession(gamemode) {
+  const data = loadData();
+  if (!data.last_sessions) data.last_sessions = {};
+  data.last_sessions[gamemode] = new Date().toISOString();
+  saveData(data);
+}
+
+// Queue open message (where the live embed is)
+function getQueueOpenMessage(gamemode) {
+  const data = loadData();
+  return (data.queue_open_messages || {})[gamemode] || null;
+}
+function saveQueueOpenMessage(gamemode, channelId, messageId) {
+  const data = loadData();
+  if (!data.queue_open_messages) data.queue_open_messages = {};
+  data.queue_open_messages[gamemode] = { channel_id: String(channelId), message_id: String(messageId) };
+  saveData(data);
+}
+function clearQueueOpenMessage(gamemode) {
+  const data = loadData();
+  if (data.queue_open_messages) delete data.queue_open_messages[gamemode];
+  saveData(data);
+}
+
 module.exports = {
   loadData,
   saveData,
@@ -189,4 +332,28 @@ module.exports = {
   getBanInfo,
   banPlayer,
   unbanPlayer,
+  getQueue,
+  addToQueue,
+  removeFromQueue,
+  clearQueue,
+  getQueuePosition,
+  getActiveTesters,
+  addActiveTester,
+  removeActiveTester,
+  clearActiveTesters,
+  getActiveSession,
+  setActiveSession,
+  clearActiveSession,
+  findActiveSessionByChannel,
+  getQueueRegion,
+  setQueueRegion,
+  clearQueueRegion,
+  getClosedMessage,
+  saveClosedMessage,
+  clearClosedMessage,
+  getLastSession,
+  saveLastSession,
+  getQueueOpenMessage,
+  saveQueueOpenMessage,
+  clearQueueOpenMessage,
 };

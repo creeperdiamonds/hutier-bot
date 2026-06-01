@@ -291,6 +291,7 @@ async function handleTicketClose(interaction) {
 
   storage.setLastClosed(actualOwnerId, actualMode, Math.floor(Date.now() / 1000));
   storage.setOpenTicketChannelId(actualOwnerId, actualMode, null);
+  storage.clearActiveSession(actualMode);
 
   const testerName = interaction.member ? interaction.member.displayName : interaction.user.username;
   await saveTranscript(channel, interaction.guild, {
@@ -347,6 +348,7 @@ async function handleTicketDismiss(interaction) {
 
   // Clear open ticket state but do NOT apply cooldown
   storage.setOpenTicketChannelId(actualOwnerId, actualMode, null);
+  storage.clearActiveSession(actualMode);
 
   const testerName = interaction.member ? interaction.member.displayName : interaction.user.username;
   await saveTranscript(channel, interaction.guild, {
@@ -473,6 +475,7 @@ async function handleGiveTierRankSelect(interaction) {
 
   storage.setLastClosed(ownerId, selectedMode, Math.floor(Date.now() / 1000));
   storage.setOpenTicketChannelId(ownerId, selectedMode, null);
+  storage.clearActiveSession(selectedMode);
 
   const embed = new EmbedBuilder()
     .setTitle(`${minecraftName} Test Result 🏆`)

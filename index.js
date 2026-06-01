@@ -15,6 +15,7 @@ const { DISCORD_TOKEN, GUILD_ID } = require('./config');
 const { initDb } = require('./database');
 const { startServer } = require('./server');
 const { runMigration } = require('./migrate');
+const storage = require('./storage');
 
 // Import all command modules
 const tierlistModule = require('./commands/tierlist');
@@ -87,26 +88,20 @@ client.once(Events.ClientReady, async (c) => {
 
 // --- Event: GuildMemberRemove (auto-remove from queues) ---
 client.on(Events.GuildMemberRemove, async (member) => {
-  const { ACTIVE_QUEUES, updateQueueMessage } = queueModule;
-  for (const [gamemode, queue] of Object.entries(ACTIVE_QUEUES)) {
-    let changed = false;
+  await queueModule.handleMemberLeave(member).catch(() => {});
+});
 
-    const pi = queue.players.findIndex(p => p.discordId === member.id);
-    if (pi >= 0) {
-      queue.players.splice(pi, 1);
-      changed = true;
-      console.log(`[Queue] Auto-removed ${member.displayName} from ${gamemode} queue (left server)`);
+// --- Event: ChannelDelete (auto-clear active session) ---
+client.on(Events.ChannelDelete, async (channel) => {
+  try {
+    const session = storage.findActiveSessionByChannel(channel.id);
+    if (session) {
+      console.log(`[Queue] Ticket channel ${channel.id} deleted — clearing active session for ${session.gamemode}`);
+      storage.clearActiveSession(session.gamemode);
+      storage.saveLastSession(session.gamemode);
     }
-
-    const ti = queue.testers.findIndex(t => t.discordId === member.id);
-    if (ti >= 0) {
-      queue.testers.splice(ti, 1);
-      changed = true;
-    }
-
-    if (changed) {
-      await updateQueueMessage(gamemode, member.client).catch(() => {});
-    }
+  } catch (e) {
+    console.error('[Queue] ChannelDelete handler error:', e);
   }
 });
 
@@ -131,10 +126,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (await queueModule.handleQueueOpen(interaction)) return;
       if (await queueModule.handleQueueJoin(interaction)) return;
       if (await queueModule.handleQueueLeave(interaction)) return;
-      if (await queueModule.handleQueueClose(interaction)) return;
-      if (await queueModule.handleQueueCloseConfirm(interaction)) return;
-      if (await queueModule.handleQueueCloseCancel(interaction)) return;
-      if (await queueModule.handleQueueNext(interaction)) return;
       if (await queueModule.handlePingClearAll(interaction)) return;
 
       // Ticket buttons
@@ -164,6 +155,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isStringSelectMenu()) {
       const id = interaction.customId;
 
+      if (await queueModule.handleRegionSelect(interaction)) return;
       if (await queueModule.handlePingSelect(interaction)) return;
       if (await queueModule.handleRemovePlayerSelect(interaction)) return;
       if (await ticketsModule.handleGiveTierGmSelect(interaction)) return;

@@ -1,24 +1,12 @@
 'use strict';
 const {
-  SlashCommandBuilder,
-  EmbedBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ActionRowBuilder,
-  StringSelectMenuBuilder,
-  StringSelectMenuOptionBuilder,
-  ChannelType,
-  PermissionFlagsBits,
+  SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle,
+  ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder,
+  ChannelType, PermissionFlagsBits,
 } = require('discord.js');
 const {
-  GAMEMODES,
-  QUEUE_CHANNELS,
-  QUEUE_PING_ROLES,
-  TICKET_CATEGORY_ID,
-  STAFF_ROLE_ID,
-  getGamemodeDisplay,
-  getGamemodeColor,
-  COOLDOWN_SECONDS,
+  GAMEMODES, QUEUE_CHANNELS, QUEUE_PING_ROLES, TICKET_CATEGORY_ID, STAFF_ROLE_ID,
+  getGamemodeDisplay, getGamemodeColor, COOLDOWN_SECONDS,
 } = require('../config');
 const db = require('../database');
 const storage = require('../storage');
@@ -28,55 +16,66 @@ function resolveQueueChannel(gamemode) {
   return storage.getQueueChannels()[gamemode] || QUEUE_CHANNELS[gamemode] || null;
 }
 
-// In-memory queue state
-// ACTIVE_QUEUES[gamemode] = { openedBy, openedAt, players: [{discordId, minecraftName}], testers: [...], calledPlayers: [], messageId, channelId }
-const ACTIVE_QUEUES = {};
+const REGIONS = ['NA', 'EU', 'AS', 'SA', 'AU'];
 
-// Map: messageId -> gamemode (persisted in storage)
-let QUEUE_MESSAGE_IDS = {};
-
-function loadState() {
-  QUEUE_MESSAGE_IDS = storage.loadQueueMessageIds();
-  const qpm = storage.getQueuePanelMessage();
-  return qpm;
-}
-
-// Build queue embed
-function buildQueueEmbed(gamemode, queue, guild) {
+function buildOpenEmbed(gamemode, guild) {
   const display = getGamemodeDisplay(gamemode);
   const color = getGamemodeColor(gamemode);
-  const indicator = '🟢';
+  const region = storage.getQueueRegion(gamemode) || '??';
 
-  const playerLines = queue.players.map(p => {
-    const member = guild.members.cache.get(p.discordId);
-    const nick = member ? member.displayName : p.discordId;
-    return `${nick} (${p.minecraftName})`;
+  const players = storage.getQueue(gamemode);
+  const testers = storage.getActiveTesters(gamemode);
+
+  const playerLines = players.map((uid, i) => {
+    const linked = db.getLinkedAccount(uid);
+    const member = guild ? guild.members.cache.get(uid) : null;
+    const nick = member ? member.displayName : uid;
+    const mc = linked ? linked.minecraft_name : '?';
+    return `**${i + 1}.** ${nick} (${mc})`;
   });
-  const testerLines = queue.testers.map(t => {
-    const member = guild.members.cache.get(t.discordId);
-    const nick = member ? member.displayName : t.discordId;
-    return `${nick} (${t.minecraftName})`;
+
+  const testerLines = testers.map(uid => {
+    const linked = db.getLinkedAccount(uid);
+    const member = guild ? guild.members.cache.get(uid) : null;
+    const nick = member ? member.displayName : uid;
+    const mc = linked ? linked.minecraft_name : '?';
+    return `${nick} (${mc})`;
   });
 
   return new EmbedBuilder()
-    .setTitle(`${indicator} ${display} Queue`)
-    .setDescription(`Players: **${queue.players.length}** | Testers: **${queue.testers.length}**`)
+    .setTitle(`🟢 ${display} Queue — ${region}`)
     .setColor(color)
     .addFields(
-      { name: 'Players', value: playerLines.join('\n') || 'Nobody in queue yet.', inline: false },
-      { name: 'Testers', value: testerLines.join('\n') || 'No testers.', inline: false },
-    );
+      {
+        name: `Players (${players.length})`,
+        value: playerLines.join('\n') || 'Nobody in queue yet.',
+        inline: false,
+      },
+      {
+        name: `Active Testers (${testers.length})`,
+        value: testerLines.join('\n') || 'No testers.',
+        inline: false,
+      },
+    )
+    .setFooter({ text: 'Click Join Queue to enter • Leave Queue to exit' });
 }
 
 function buildClosedEmbed(gamemode) {
+  const display = getGamemodeDisplay(gamemode);
+  const lastSession = storage.getLastSession(gamemode);
+  const descLines = [
+    'No testers are currently available.',
+    lastSession ? `Last session: ${lastSession}` : null,
+    'Check back later.',
+  ].filter(Boolean);
+
   return new EmbedBuilder()
-    .setTitle(`🔴 ${getGamemodeDisplay(gamemode)} Queue`)
-    .setDescription('The queue is closed.')
-    .setColor(getGamemodeColor(gamemode));
+    .setTitle(`🔴 ${display} Queue — Closed`)
+    .setDescription(descLines.join('\n'))
+    .setColor(0xe74c3c);
 }
 
-// Build persistent action row for a queue message
-function buildQueueActionRow(gamemode) {
+function buildPublicRow(gamemode) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`queue_join:${gamemode}`)
@@ -86,46 +85,33 @@ function buildQueueActionRow(gamemode) {
       .setCustomId(`queue_leave:${gamemode}`)
       .setLabel('Leave Queue')
       .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId(`queue_close:${gamemode}`)
-      .setLabel('❌ Close Queue')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId(`queue_next:${gamemode}`)
-      .setLabel('Next Player')
-      .setStyle(ButtonStyle.Primary),
   );
 }
 
-// Update queue message
-async function updateQueueMessage(gamemode, bot) {
-  const queue = ACTIVE_QUEUES[gamemode];
-  const msgId = Object.keys(QUEUE_MESSAGE_IDS).find(id => QUEUE_MESSAGE_IDS[id] === gamemode);
-  if (!msgId) return;
+async function refreshPublicEmbed(gamemode, client, guild) {
+  const openMsg = storage.getQueueOpenMessage(gamemode);
+  if (!openMsg) return;
 
-  const channelId = resolveQueueChannel(gamemode);
-  if (!channelId) return;
-
-  const channel = bot.channels.cache.get(channelId);
+  const { channel_id, message_id } = openMsg;
+  const channel = client.channels.cache.get(channel_id);
   if (!channel || !channel.isTextBased()) return;
 
   try {
-    const msg = await channel.messages.fetch(msgId);
-    if (!queue) {
-      await msg.edit({ embeds: [buildClosedEmbed(gamemode)], components: [] });
-      delete QUEUE_MESSAGE_IDS[msgId];
-      storage.persistQueueMessageIds(QUEUE_MESSAGE_IDS);
-    } else {
-      await msg.edit({
-        embeds: [buildQueueEmbed(gamemode, queue, channel.guild)],
-        components: [buildQueueActionRow(gamemode)],
-      });
-    }
+    const msg = await channel.messages.fetch(message_id);
+    await msg.edit({
+      embeds: [buildOpenEmbed(gamemode, guild || channel.guild)],
+      components: [buildPublicRow(gamemode)],
+    });
   } catch (e) {
-    console.error(`[Queue] updateQueueMessage error [${gamemode}]:`, e.message);
-    delete QUEUE_MESSAGE_IDS[msgId];
-    storage.persistQueueMessageIds(QUEUE_MESSAGE_IDS);
+    console.error(`[Queue] refreshPublicEmbed error [${gamemode}]:`, e.message);
   }
+}
+
+async function getQueueRole(guild, gamemode) {
+  const display = getGamemodeDisplay(gamemode);
+  const roleName = `${display} Queue`;
+  await guild.roles.fetch().catch(() => {});
+  return guild.roles.cache.find(r => r.name === roleName) || null;
 }
 
 const commands = {
@@ -184,7 +170,7 @@ const commands = {
   closequeue: {
     data: new SlashCommandBuilder()
       .setName('closequeue')
-      .setDescription('Force close a queue (staff only)')
+      .setDescription('Remove yourself from active testers, or force-close a queue (staff only)')
       .addStringOption(o => o.setName('gamemode').setDescription('Gamemode').setRequired(true)
         .addChoices(...GAMEMODES.map(g => ({ name: g, value: g.toLowerCase() })))),
 
@@ -192,35 +178,171 @@ const commands = {
       await interaction.deferReply({ ephemeral: true });
 
       const gamemode = interaction.options.getString('gamemode');
-      const queue = ACTIVE_QUEUES[gamemode];
+      const testers = storage.getActiveTesters(gamemode);
 
-      if (!queue) {
-        // Try to clean up stale message
-        const msgId = Object.keys(QUEUE_MESSAGE_IDS).find(id => QUEUE_MESSAGE_IDS[id] === gamemode);
-        if (msgId) {
-          const channelId = resolveQueueChannel(gamemode);
-          if (channelId) {
-            const ch = interaction.guild.channels.cache.get(channelId);
-            if (ch && ch.isTextBased()) {
-              try {
-                const msg = await ch.messages.fetch(msgId);
-                await msg.edit({ embeds: [buildClosedEmbed(gamemode)], components: [] });
-              } catch {}
-            }
-          }
-          delete QUEUE_MESSAGE_IDS[msgId];
-          storage.persistQueueMessageIds(QUEUE_MESSAGE_IDS);
-        }
+      if (!testers.length) {
         return interaction.editReply(`❌ The **${getGamemodeDisplay(gamemode)}** queue is not open.`);
       }
 
-      if (!isStaff(interaction.member) && queue.openedBy !== interaction.user.id) {
-        return interaction.editReply('❌ Only the queue opener or staff can close it.');
+      const isTester = testers.includes(String(interaction.user.id));
+      if (!isTester && !isStaff(interaction.member)) {
+        return interaction.editReply('❌ Only active testers or staff can close the queue.');
       }
 
-      delete ACTIVE_QUEUES[gamemode];
-      await updateQueueMessage(gamemode, interaction.client);
+      // Remove the calling tester (or if staff, just remove them anyway)
+      storage.removeActiveTester(gamemode, interaction.user.id);
+      const remaining = storage.getActiveTesters(gamemode);
+
+      if (remaining.length > 0) {
+        // Others still active — just refresh embed
+        await refreshPublicEmbed(gamemode, interaction.client, interaction.guild);
+        return interaction.editReply(
+          `✅ You left the **${getGamemodeDisplay(gamemode)}** queue. **${remaining.length}** tester(s) still active.`
+        );
+      }
+
+      // Last tester — close the queue
+      storage.saveLastSession(gamemode);
+      storage.clearQueueRegion(gamemode);
+      storage.clearActiveTesters(gamemode);
+
+      // Edit open message in place to closed embed, save as closed message
+      const openMsg = storage.getQueueOpenMessage(gamemode);
+      if (openMsg) {
+        const { channel_id, message_id } = openMsg;
+        const ch = interaction.guild.channels.cache.get(channel_id);
+        if (ch && ch.isTextBased()) {
+          try {
+            const msg = await ch.messages.fetch(message_id);
+            await msg.edit({ embeds: [buildClosedEmbed(gamemode)], components: [] });
+            storage.saveClosedMessage(gamemode, channel_id, message_id);
+          } catch (e) {
+            console.error(`[Queue] closequeue edit error [${gamemode}]:`, e.message);
+          }
+        }
+        storage.clearQueueOpenMessage(gamemode);
+      }
+
+      // Clear the waitlist and strip queue roles from all players
+      const players = storage.getQueue(gamemode);
+      const queueRole = await getQueueRole(interaction.guild, gamemode);
+      for (const uid of players) {
+        if (queueRole) {
+          const member = interaction.guild.members.cache.get(uid);
+          if (member) await member.roles.remove(queueRole, 'Queue closed').catch(() => {});
+        }
+      }
+      storage.clearQueue(gamemode);
+
       await interaction.editReply(`✅ **${getGamemodeDisplay(gamemode)}** queue closed.`);
+    },
+  },
+
+  // /callnext
+  callnext: {
+    data: new SlashCommandBuilder()
+      .setName('callnext')
+      .setDescription('Call the next player from the queue and create a ticket channel')
+      .addStringOption(o => o.setName('gamemode').setDescription('Gamemode').setRequired(true)
+        .addChoices(...GAMEMODES.map(g => ({ name: g, value: g.toLowerCase() })))),
+
+    async execute(interaction) {
+      await interaction.deferReply({ ephemeral: true });
+
+      const gamemode = interaction.options.getString('gamemode');
+
+      // Must be an active tester or staff
+      const testers = storage.getActiveTesters(gamemode);
+      if (!testers.length) {
+        return interaction.editReply(`❌ The **${getGamemodeDisplay(gamemode)}** queue is not open.`);
+      }
+      if (!isStaff(interaction.member) && !isGamemodeTester(interaction.member, gamemode)) {
+        return interaction.editReply('❌ Only testers or staff can call next.');
+      }
+
+      // Block if active session already in progress
+      const session = storage.getActiveSession(gamemode);
+      if (session) {
+        return interaction.editReply(`❌ A session is already in progress for **${getGamemodeDisplay(gamemode)}**. Close the current ticket first.`);
+      }
+
+      const players = storage.getQueue(gamemode);
+      if (!players.length) {
+        return interaction.editReply('❌ No players in the queue.');
+      }
+
+      const nextUserId = players[0];
+      const linked = db.getLinkedAccount(nextUserId);
+      const mcName = linked ? linked.minecraft_name : 'Unknown';
+
+      // Remove from queue and strip queue role
+      storage.removeFromQueue(gamemode, nextUserId);
+      const queueRole = await getQueueRole(interaction.guild, gamemode);
+      if (queueRole) {
+        const playerMember = interaction.guild.members.cache.get(nextUserId);
+        if (playerMember) await playerMember.roles.remove(queueRole, 'Called from queue').catch(() => {});
+      }
+
+      // Create ticket channel
+      const guild = interaction.guild;
+      const category = TICKET_CATEGORY_ID ? guild.channels.cache.get(TICKET_CATEGORY_ID) : null;
+      if (!category || category.type !== ChannelType.GuildCategory) {
+        await refreshPublicEmbed(gamemode, interaction.client, guild);
+        return interaction.editReply('❌ Ticket category not found.');
+      }
+
+      const channelName = `${gamemode}-${mcName}`.toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 50);
+
+      const permOverwrites = [
+        { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+        {
+          id: nextUserId,
+          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+        },
+      ];
+      if (STAFF_ROLE_ID) {
+        permOverwrites.push({
+          id: STAFF_ROLE_ID,
+          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels],
+        });
+      }
+
+      try {
+        const ticketChannel = await guild.channels.create({
+          name: channelName,
+          type: ChannelType.GuildText,
+          parent: category.id,
+          permissionOverwrites: permOverwrites,
+          topic: `owner=${nextUserId} | mode=${gamemode} | mc=${mcName}`,
+          reason: `Queue ticket for ${mcName}`,
+        });
+
+        storage.setActiveSession(gamemode, interaction.user.id, nextUserId, ticketChannel.id);
+
+        const embed = new EmbedBuilder()
+          .setTitle('Test Request')
+          .setDescription(
+            `**Player:** ${mcName}\n` +
+            `**Gamemode:** ${getGamemodeDisplay(gamemode)}\n` +
+            `**Discord:** <@${nextUserId}>`
+          )
+          .setColor(0x5865F2)
+          .setThumbnail(`https://minotar.net/helm/${mcName}/128.png`);
+
+        const { buildCloseTicketRow } = require('./tickets');
+        await ticketChannel.send({
+          content: `<@${nextUserId}>`,
+          embeds: [embed],
+          components: [buildCloseTicketRow(nextUserId, gamemode)],
+        });
+
+        await refreshPublicEmbed(gamemode, interaction.client, guild);
+
+        await interaction.editReply(`✅ Called **${mcName}** → ${ticketChannel}`);
+      } catch (e) {
+        console.error('[Queue] callnext error creating ticket:', e);
+        await interaction.editReply(`❌ Error creating ticket channel: ${e.message}`);
+      }
     },
   },
 
@@ -234,11 +356,19 @@ const commands = {
       await interaction.deferReply({ ephemeral: true });
 
       const lines = [];
-      for (const [gamemode, queue] of Object.entries(ACTIVE_QUEUES)) {
-        const pi = queue.players.findIndex(p => p.discordId === interaction.user.id);
-        const ti = queue.testers.findIndex(t => t.discordId === interaction.user.id);
-        if (pi >= 0) lines.push(`**${getGamemodeDisplay(gamemode)}**: Position #${pi + 1} of ${queue.players.length}`);
-        else if (ti >= 0) lines.push(`**${getGamemodeDisplay(gamemode)}**: Tester`);
+      for (const gm of GAMEMODES) {
+        const modeKey = gm.toLowerCase();
+        const players = storage.getQueue(modeKey);
+        const testers = storage.getActiveTesters(modeKey);
+
+        const pi = players.indexOf(String(interaction.user.id));
+        const isTester = testers.includes(String(interaction.user.id));
+
+        if (pi >= 0) {
+          lines.push(`**${getGamemodeDisplay(modeKey)}**: Position #${pi + 1} of ${players.length}`);
+        } else if (isTester) {
+          lines.push(`**${getGamemodeDisplay(modeKey)}**: Active Tester`);
+        }
       }
 
       if (!lines.length) {
@@ -266,9 +396,9 @@ const commands = {
       await interaction.deferReply({ ephemeral: true });
 
       const gamemode = interaction.options.getString('gamemode');
-      const queue = ACTIVE_QUEUES[gamemode];
+      const testers = storage.getActiveTesters(gamemode);
 
-      if (!queue) {
+      if (!testers.length) {
         return interaction.editReply(`❌ **${getGamemodeDisplay(gamemode)}** queue is not open.`);
       }
 
@@ -276,17 +406,20 @@ const commands = {
         return interaction.editReply('❌ Staff or testers only.');
       }
 
-      if (!queue.players.length) {
+      const players = storage.getQueue(gamemode);
+      if (!players.length) {
         return interaction.editReply('❌ No players in this queue.');
       }
 
-      const options = queue.players.map((p, i) => {
-        const member = interaction.guild.members.cache.get(p.discordId);
-        const nick = member ? member.displayName : p.discordId;
+      const options = await Promise.all(players.map(async (uid, i) => {
+        const linked = db.getLinkedAccount(uid);
+        const member = interaction.guild.members.cache.get(uid);
+        const nick = member ? member.displayName : uid;
+        const mc = linked ? linked.minecraft_name : '?';
         return new StringSelectMenuOptionBuilder()
-          .setLabel(`#${i + 1} — ${nick} (${p.minecraftName})`)
-          .setValue(p.discordId);
-      });
+          .setLabel(`#${i + 1} — ${nick} (${mc})`.slice(0, 100))
+          .setValue(uid);
+      }));
 
       const select = new StringSelectMenuBuilder()
         .setCustomId(`queue_remove_player:${gamemode}`)
@@ -313,15 +446,26 @@ const commands = {
       }
 
       const gamemode = interaction.options.getString('gamemode');
-      const queue = ACTIVE_QUEUES[gamemode];
+      const testers = storage.getActiveTesters(gamemode);
 
-      if (!queue) {
+      if (!testers.length) {
         return interaction.editReply(`❌ **${getGamemodeDisplay(gamemode)}** queue is not open.`);
       }
 
-      const count = queue.players.length;
-      queue.players = [];
-      await updateQueueMessage(gamemode, interaction.client);
+      const players = storage.getQueue(gamemode);
+      const count = players.length;
+
+      // Strip queue role from all players
+      const queueRole = await getQueueRole(interaction.guild, gamemode);
+      for (const uid of players) {
+        if (queueRole) {
+          const member = interaction.guild.members.cache.get(uid);
+          if (member) await member.roles.remove(queueRole, 'Queue cleared').catch(() => {});
+        }
+      }
+
+      storage.clearQueue(gamemode);
+      await refreshPublicEmbed(gamemode, interaction.client, interaction.guild);
 
       const channelId = resolveQueueChannel(gamemode);
       if (channelId) {
@@ -396,52 +540,100 @@ async function handleQueueOpen(interaction) {
     return true;
   }
 
-  if (ACTIVE_QUEUES[gamemode]) {
-    await interaction.editReply(`❌ **${getGamemodeDisplay(gamemode)}** queue is already open!`);
+  // Check not already active tester
+  const testers = storage.getActiveTesters(gamemode);
+  if (testers.includes(String(interaction.user.id))) {
+    await interaction.editReply(`❌ You are already on duty for the **${getGamemodeDisplay(gamemode)}** queue.`);
     return true;
   }
 
-  const linked = db.getLinkedAccount(interaction.user.id);
-  const mcName = linked ? linked.minecraft_name : 'TESTER';
+  // Show region select
+  const options = REGIONS.map(r =>
+    new StringSelectMenuOptionBuilder().setLabel(r).setValue(r)
+  );
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`queue_region:${gamemode}`)
+    .setPlaceholder('Select a region...')
+    .addOptions(options);
 
-  ACTIVE_QUEUES[gamemode] = {
-    openedBy: interaction.user.id,
-    openedAt: Date.now(),
-    players: [],
-    testers: [{ discordId: interaction.user.id, minecraftName: mcName }],
-    calledPlayers: [],
-  };
+  const row = new ActionRowBuilder().addComponents(select);
+  await interaction.editReply({ content: 'Select your region:', components: [row] });
+  return true;
+}
+
+async function handleRegionSelect(interaction) {
+  if (!interaction.customId.startsWith('queue_region:')) return false;
+  const gamemode = interaction.customId.split(':')[1];
+
+  const region = interaction.values[0];
+
+  const existingTesters = storage.getActiveTesters(gamemode);
+  const queueAlreadyOpen = existingTesters.length > 0;
+
+  storage.addActiveTester(gamemode, interaction.user.id);
+  storage.setQueueRegion(gamemode, region);
+
+  if (queueAlreadyOpen) {
+    // Already open — just join and refresh
+    await refreshPublicEmbed(gamemode, interaction.client, interaction.guild);
+    await interaction.update({
+      content: `✅ You joined the existing **${getGamemodeDisplay(gamemode)}** queue (${region}).`,
+      components: [],
+    });
+    return true;
+  }
+
+  // First tester — open the queue
+  // Delete old closed message if one exists
+  const closedMsg = storage.getClosedMessage(gamemode);
+  if (closedMsg) {
+    const { channel_id, message_id } = closedMsg;
+    const ch = interaction.guild.channels.cache.get(channel_id);
+    if (ch && ch.isTextBased()) {
+      try {
+        const msg = await ch.messages.fetch(message_id);
+        await msg.delete();
+      } catch {}
+    }
+    storage.clearClosedMessage(gamemode);
+  }
 
   const channelId = resolveQueueChannel(gamemode);
   if (!channelId) {
-    await interaction.editReply(`❌ No channel configured for **${getGamemodeDisplay(gamemode)}**. Run \`/detect\` to auto-configure.`);
-    delete ACTIVE_QUEUES[gamemode];
+    storage.removeActiveTester(gamemode, interaction.user.id);
+    await interaction.update({
+      content: `❌ No channel configured for **${getGamemodeDisplay(gamemode)}**.`,
+      components: [],
+    });
     return true;
   }
 
   const channel = interaction.guild.channels.cache.get(channelId);
   if (!channel || !channel.isTextBased()) {
-    await interaction.editReply(`❌ Queue channel not found (${channelId}).`);
-    delete ACTIVE_QUEUES[gamemode];
+    storage.removeActiveTester(gamemode, interaction.user.id);
+    await interaction.update({
+      content: `❌ Queue channel not found (${channelId}).`,
+      components: [],
+    });
     return true;
   }
 
   const pingRoleId = QUEUE_PING_ROLES[gamemode];
-  const pingText = pingRoleId ? `<@&${pingRoleId}> ` : '';
+  const pingText = pingRoleId ? `<@&${pingRoleId}>` : undefined;
 
-  const embed = buildQueueEmbed(gamemode, ACTIVE_QUEUES[gamemode], interaction.guild);
-  embed.setDescription('The queue is open! Click the buttons below to join.');
-
+  const embed = buildOpenEmbed(gamemode, interaction.guild);
   const msg = await channel.send({
-    content: pingText || undefined,
+    content: pingText,
     embeds: [embed],
-    components: [buildQueueActionRow(gamemode)],
+    components: [buildPublicRow(gamemode)],
   });
 
-  QUEUE_MESSAGE_IDS[msg.id] = gamemode;
-  storage.persistQueueMessageIds(QUEUE_MESSAGE_IDS);
+  storage.saveQueueOpenMessage(gamemode, channel.id, msg.id);
 
-  await interaction.editReply(`✅ **${getGamemodeDisplay(gamemode)}** queue opened!`);
+  await interaction.update({
+    content: `✅ **${getGamemodeDisplay(gamemode)}** queue opened in ${channel} (Region: ${region})!`,
+    components: [],
+  });
   return true;
 }
 
@@ -449,8 +641,8 @@ async function handleQueueJoin(interaction) {
   if (!interaction.customId.startsWith('queue_join:')) return false;
   const gamemode = interaction.customId.split(':')[1];
 
-  const queue = ACTIVE_QUEUES[gamemode];
-  if (!queue) {
+  const testers = storage.getActiveTesters(gamemode);
+  if (!testers.length) {
     await interaction.reply({ content: '❌ This queue is not open.', ephemeral: true });
     return true;
   }
@@ -461,10 +653,22 @@ async function handleQueueJoin(interaction) {
     return true;
   }
 
+  // Testers cannot join as players
+  if (isGamemodeTester(member, gamemode)) {
+    await interaction.reply({ content: '❌ You are a tester for this gamemode.', ephemeral: true });
+    return true;
+  }
+
   // Already in queue?
-  if (queue.players.some(p => p.discordId === interaction.user.id) ||
-      queue.testers.some(t => t.discordId === interaction.user.id)) {
+  const players = storage.getQueue(gamemode);
+  if (players.includes(String(interaction.user.id))) {
     await interaction.reply({ content: '❌ You\'re already in the queue!', ephemeral: true });
+    return true;
+  }
+
+  // Already an active tester?
+  if (testers.includes(String(interaction.user.id))) {
+    await interaction.reply({ content: '❌ You are already on duty as a tester.', ephemeral: true });
     return true;
   }
 
@@ -475,15 +679,7 @@ async function handleQueueJoin(interaction) {
     return true;
   }
 
-  // Tester path
-  if (isGamemodeTester(member, gamemode)) {
-    queue.testers.push({ discordId: interaction.user.id, minecraftName: linked.minecraft_name });
-    await updateQueueMessage(gamemode, interaction.client);
-    await interaction.reply({ content: `✅ You joined the **${getGamemodeDisplay(gamemode)}** queue as a tester!`, ephemeral: true });
-    return true;
-  }
-
-  // Player path: cooldown check
+  // Cooldown check
   const cdLeft = storage.cooldownLeft(interaction.user.id, gamemode);
   if (cdLeft > 0) {
     const d = Math.floor(cdLeft / 86400);
@@ -506,9 +702,22 @@ async function handleQueueJoin(interaction) {
     return true;
   }
 
-  queue.players.push({ discordId: interaction.user.id, minecraftName: linked.minecraft_name });
-  await updateQueueMessage(gamemode, interaction.client);
-  await interaction.reply({ content: `✅ You joined the **${getGamemodeDisplay(gamemode)}** queue!`, ephemeral: true });
+  storage.addToQueue(gamemode, interaction.user.id);
+
+  // Assign queue role
+  const queueRole = await getQueueRole(interaction.guild, gamemode);
+  if (queueRole) {
+    await member.roles.add(queueRole, 'Joined queue').catch(() => {});
+  }
+
+  await refreshPublicEmbed(gamemode, interaction.client, interaction.guild);
+
+  const updatedPlayers = storage.getQueue(gamemode);
+  const pos = updatedPlayers.indexOf(String(interaction.user.id)) + 1;
+  await interaction.reply({
+    content: `✅ You joined the **${getGamemodeDisplay(gamemode)}** queue! You are **#${pos}** of **${updatedPlayers.length}**.`,
+    ephemeral: true,
+  });
   return true;
 }
 
@@ -516,176 +725,22 @@ async function handleQueueLeave(interaction) {
   if (!interaction.customId.startsWith('queue_leave:')) return false;
   const gamemode = interaction.customId.split(':')[1];
 
-  const queue = ACTIVE_QUEUES[gamemode];
-  if (!queue) {
-    await interaction.reply({ content: '❌ This queue is not open.', ephemeral: true });
+  const players = storage.getQueue(gamemode);
+  if (!players.includes(String(interaction.user.id))) {
+    await interaction.reply({ content: '❌ You are not in this queue.', ephemeral: true });
     return true;
   }
 
-  const pi = queue.players.findIndex(p => p.discordId === interaction.user.id);
-  if (pi >= 0) {
-    queue.players.splice(pi, 1);
-    await updateQueueMessage(gamemode, interaction.client);
-    await interaction.reply({ content: `✅ You left the **${getGamemodeDisplay(gamemode)}** queue.`, ephemeral: true });
-    return true;
+  storage.removeFromQueue(gamemode, interaction.user.id);
+
+  // Strip queue role
+  const queueRole = await getQueueRole(interaction.guild, gamemode);
+  if (queueRole && interaction.member) {
+    await interaction.member.roles.remove(queueRole, 'Left queue').catch(() => {});
   }
 
-  const ti = queue.testers.findIndex(t => t.discordId === interaction.user.id);
-  if (ti >= 0) {
-    queue.testers.splice(ti, 1);
-    await updateQueueMessage(gamemode, interaction.client);
-    await interaction.reply({ content: `✅ You left the **${getGamemodeDisplay(gamemode)}** queue.`, ephemeral: true });
-    return true;
-  }
-
-  await interaction.reply({ content: '❌ You are not in this queue.', ephemeral: true });
-  return true;
-}
-
-async function handleQueueClose(interaction) {
-  if (!interaction.customId.startsWith('queue_close:')) return false;
-  const gamemode = interaction.customId.split(':')[1];
-
-  const queue = ACTIVE_QUEUES[gamemode];
-  if (!queue) {
-    await interaction.reply({ content: '❌ This queue is already closed.', ephemeral: true });
-    return true;
-  }
-
-  if (!isStaff(interaction.member) && queue.openedBy !== interaction.user.id) {
-    await interaction.reply({ content: '❌ Only the queue opener or staff can close it.', ephemeral: true });
-    return true;
-  }
-
-  // Confirm buttons
-  const confirmBtn = new ButtonBuilder()
-    .setCustomId(`queue_close_confirm:${gamemode}`)
-    .setLabel('Yes, close it')
-    .setStyle(ButtonStyle.Danger);
-  const cancelBtn = new ButtonBuilder()
-    .setCustomId('queue_close_cancel')
-    .setLabel('Cancel')
-    .setStyle(ButtonStyle.Secondary);
-
-  const row = new ActionRowBuilder().addComponents(confirmBtn, cancelBtn);
-  await interaction.reply({
-    content: `Are you sure you want to close the **${getGamemodeDisplay(gamemode)}** queue?`,
-    components: [row],
-    ephemeral: true,
-  });
-  return true;
-}
-
-async function handleQueueCloseConfirm(interaction) {
-  if (!interaction.customId.startsWith('queue_close_confirm:')) return false;
-  const gamemode = interaction.customId.split(':')[1];
-
-  const queue = ACTIVE_QUEUES[gamemode];
-  if (queue) {
-    if (!isStaff(interaction.member) && queue.openedBy !== interaction.user.id) {
-      await interaction.reply({ content: '❌ Only the queue opener or staff can close it.', ephemeral: true });
-      return true;
-    }
-    delete ACTIVE_QUEUES[gamemode];
-  }
-
-  await updateQueueMessage(gamemode, interaction.client);
-  await interaction.update({ content: `✅ **${getGamemodeDisplay(gamemode)}** queue closed.`, components: [] });
-  return true;
-}
-
-async function handleQueueCloseCancel(interaction) {
-  if (interaction.customId !== 'queue_close_cancel') return false;
-  await interaction.update({ content: '❌ Cancelled.', components: [] });
-  return true;
-}
-
-async function handleQueueNext(interaction) {
-  if (!interaction.customId.startsWith('queue_next:')) return false;
-  const gamemode = interaction.customId.split(':')[1];
-
-  const queue = ACTIVE_QUEUES[gamemode];
-  if (!queue) {
-    await interaction.reply({ content: '❌ This queue is not open.', ephemeral: true });
-    return true;
-  }
-
-  if (!isStaff(interaction.member) && queue.openedBy !== interaction.user.id) {
-    await interaction.reply({ content: '❌ Only the queue opener or staff can call next player.', ephemeral: true });
-    return true;
-  }
-
-  if (!queue.players.length) {
-    await interaction.reply({ content: '❌ No more players in queue.', ephemeral: true });
-    return true;
-  }
-
-  const nextPlayer = queue.players.shift();
-  queue.calledPlayers.push(nextPlayer.discordId);
-
-  await updateQueueMessage(gamemode, interaction.client);
-
-  // Create ticket channel
-  const guild = interaction.guild;
-  const categoryId = TICKET_CATEGORY_ID;
-  const category = categoryId ? guild.channels.cache.get(categoryId) : null;
-
-  if (!category || category.type !== ChannelType.GuildCategory) {
-    await interaction.reply({ content: '❌ Ticket category not found.', ephemeral: true });
-    return true;
-  }
-
-  const channelName = `${gamemode}-${nextPlayer.minecraftName}`.toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 50);
-
-  const permOverwrites = [
-    { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-    {
-      id: nextPlayer.discordId,
-      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-    },
-  ];
-  if (STAFF_ROLE_ID) {
-    permOverwrites.push({
-      id: STAFF_ROLE_ID,
-      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels],
-    });
-  }
-
-  try {
-    const ticketChannel = await guild.channels.create({
-      name: channelName,
-      type: ChannelType.GuildText,
-      parent: category.id,
-      permissionOverwrites: permOverwrites,
-      topic: `owner=${nextPlayer.discordId} | mode=${gamemode} | mc=${nextPlayer.minecraftName}`,
-      reason: `Queue ticket for ${nextPlayer.minecraftName}`,
-    });
-
-    const embed = new EmbedBuilder()
-      .setTitle('Test Request')
-      .setDescription(
-        `**Player:** ${nextPlayer.minecraftName}\n` +
-        `**Gamemode:** ${getGamemodeDisplay(gamemode)}\n` +
-        `**Discord:** <@${nextPlayer.discordId}>`
-      )
-      .setColor(0x5865F2)
-      .setThumbnail(`https://minotar.net/helm/${nextPlayer.minecraftName}/128.png`);
-
-    const { buildCloseTicketRow } = require('./tickets');
-    await ticketChannel.send({
-      embeds: [embed],
-      components: [buildCloseTicketRow(nextPlayer.discordId, gamemode)],
-    });
-
-    await interaction.reply({
-      content: `✅ Called **${nextPlayer.minecraftName}** → ${ticketChannel}`,
-      ephemeral: true,
-    });
-  } catch (e) {
-    console.error('[Queue] Error creating ticket channel:', e);
-    await interaction.reply({ content: `❌ Error creating ticket channel: ${e.message}`, ephemeral: true });
-  }
-
+  await refreshPublicEmbed(gamemode, interaction.client, interaction.guild);
+  await interaction.reply({ content: `✅ You left the **${getGamemodeDisplay(gamemode)}** queue.`, ephemeral: true });
   return true;
 }
 
@@ -693,24 +748,32 @@ async function handleRemovePlayerSelect(interaction) {
   if (!interaction.customId.startsWith('queue_remove_player:')) return false;
   const gamemode = interaction.customId.split(':')[1];
 
-  const queue = ACTIVE_QUEUES[gamemode];
-  if (!queue) {
+  const testers = storage.getActiveTesters(gamemode);
+  if (!testers.length) {
     await interaction.update({ content: '❌ Queue no longer active.', components: [] });
     return true;
   }
 
   const targetId = interaction.values[0];
-  const pi = queue.players.findIndex(p => p.discordId === targetId);
-  if (pi < 0) {
+  const players = storage.getQueue(gamemode);
+  if (!players.includes(targetId)) {
     await interaction.update({ content: '❌ Player not found in queue (already removed?)', components: [] });
     return true;
   }
 
-  const removed = queue.players.splice(pi, 1)[0];
-  await updateQueueMessage(gamemode, interaction.client);
+  storage.removeFromQueue(gamemode, targetId);
 
-  const member = interaction.guild.members.cache.get(targetId);
-  const name = member ? member.displayName : removed.minecraftName;
+  // Strip queue role
+  const queueRole = await getQueueRole(interaction.guild, gamemode);
+  if (queueRole) {
+    const targetMember = interaction.guild.members.cache.get(targetId);
+    if (targetMember) await targetMember.roles.remove(queueRole, 'Removed from queue').catch(() => {});
+  }
+
+  await refreshPublicEmbed(gamemode, interaction.client, interaction.guild);
+
+  const targetMember = interaction.guild.members.cache.get(targetId);
+  const name = targetMember ? targetMember.displayName : targetId;
   await interaction.update({
     content: `✅ Removed **${name}** from the **${getGamemodeDisplay(gamemode)}** queue.`,
     components: [],
@@ -776,20 +839,52 @@ async function handlePingClearAll(interaction) {
   return true;
 }
 
+async function handleMemberLeave(member) {
+  const userId = String(member.id);
+
+  for (const gm of GAMEMODES) {
+    const modeKey = gm.toLowerCase();
+
+    // Remove from player queue
+    const players = storage.getQueue(modeKey);
+    if (players.includes(userId)) {
+      storage.removeFromQueue(modeKey, userId);
+      console.log(`[Queue] Auto-removed ${member.displayName || userId} from ${modeKey} player queue (left server)`);
+    }
+
+    // Remove from active testers
+    const testers = storage.getActiveTesters(modeKey);
+    if (testers.includes(userId)) {
+      storage.removeActiveTester(modeKey, userId);
+      const remaining = storage.getActiveTesters(modeKey);
+      console.log(`[Queue] Auto-removed ${member.displayName || userId} from ${modeKey} testers (left server)`);
+
+      if (remaining.length === 0) {
+        // Last tester left — close the queue state
+        storage.saveLastSession(modeKey);
+        storage.clearQueueRegion(modeKey);
+        storage.clearQueue(modeKey);
+        // We can't refresh the embed here without guild context, just log
+        console.log(`[Queue] Last tester left for ${modeKey}, queue auto-closed.`);
+      }
+    }
+  }
+}
+
+function loadState() {
+  // No-op: state is now fully persisted in data.json via storage functions
+}
+
 module.exports = {
   commands,
-  ACTIVE_QUEUES,
-  QUEUE_MESSAGE_IDS,
   loadState,
-  updateQueueMessage,
+  handleMemberLeave,
   handleQueueOpen,
+  handleRegionSelect,
   handleQueueJoin,
   handleQueueLeave,
-  handleQueueClose,
-  handleQueueCloseConfirm,
-  handleQueueCloseCancel,
-  handleQueueNext,
   handleRemovePlayerSelect,
   handlePingSelect,
   handlePingClearAll,
+  refreshPublicEmbed,
 };
