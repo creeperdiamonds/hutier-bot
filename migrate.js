@@ -16,10 +16,15 @@ function normalizeMode(mode) {
 }
 
 async function fetchJsonFromMessage(msg) {
-  // Try message content first
-  const content = msg.content && msg.content.trim();
-  if (content && content.startsWith('{')) {
-    try { return JSON.parse(content); } catch {}
+  // Try message content first (handles raw JSON or ```json ... ``` code blocks)
+  let content = msg.content && msg.content.trim();
+  if (content) {
+    // Strip code block fences if present
+    const fenceMatch = content.match(/^```(?:json)?\s*([\s\S]*?)```$/);
+    if (fenceMatch) content = fenceMatch[1].trim();
+    if (content.startsWith('{')) {
+      try { return JSON.parse(content); } catch {}
+    }
   }
 
   // Try attachments (in case the JSON was sent as a file)
