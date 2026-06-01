@@ -14,6 +14,7 @@ const {
 const { DISCORD_TOKEN, GUILD_ID } = require('./config');
 const { initDb } = require('./database');
 const { startServer } = require('./server');
+const { runMigration } = require('./migrate');
 
 // Import all command modules
 const tierlistModule = require('./commands/tierlist');
@@ -72,6 +73,13 @@ client.once(Events.ClientReady, async (c) => {
   await registerCommands();
   queueModule.loadState();
   await startServer(c);
+
+  // Run migration if a sync channel exists (deletes itself when done)
+  const db = require('./database');
+  const guild = GUILD_ID ? c.guilds.cache.get(GUILD_ID) : c.guilds.cache.first();
+  if (guild) {
+    await runMigration(guild, db).catch(e => console.error('[Migrate] Error:', e));
+  }
 
   console.log('[Bot] Ready!');
 });
