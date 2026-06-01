@@ -24,6 +24,10 @@ const db = require('../database');
 const storage = require('../storage');
 const { isStaff, isGamemodeTester, canJoinQueue } = require('../permissions');
 
+function resolveQueueChannel(gamemode) {
+  return storage.getQueueChannels()[gamemode] || QUEUE_CHANNELS[gamemode] || null;
+}
+
 // In-memory queue state
 // ACTIVE_QUEUES[gamemode] = { openedBy, openedAt, players: [{discordId, minecraftName}], testers: [...], calledPlayers: [], messageId, channelId }
 const ACTIVE_QUEUES = {};
@@ -99,7 +103,7 @@ async function updateQueueMessage(gamemode, bot) {
   const msgId = Object.keys(QUEUE_MESSAGE_IDS).find(id => QUEUE_MESSAGE_IDS[id] === gamemode);
   if (!msgId) return;
 
-  const channelId = QUEUE_CHANNELS[gamemode];
+  const channelId = resolveQueueChannel(gamemode);
   if (!channelId) return;
 
   const channel = bot.channels.cache.get(channelId);
@@ -143,7 +147,7 @@ const commands = {
 
       for (const gm of GAMEMODES) {
         const modeKey = gm.toLowerCase();
-        const channelId = QUEUE_CHANNELS[modeKey];
+        const channelId = resolveQueueChannel(modeKey);
         if (!channelId) { skipped.push(gm); continue; }
 
         const channel = guild.channels.cache.get(channelId);
@@ -194,7 +198,7 @@ const commands = {
         // Try to clean up stale message
         const msgId = Object.keys(QUEUE_MESSAGE_IDS).find(id => QUEUE_MESSAGE_IDS[id] === gamemode);
         if (msgId) {
-          const channelId = QUEUE_CHANNELS[gamemode];
+          const channelId = resolveQueueChannel(gamemode);
           if (channelId) {
             const ch = interaction.guild.channels.cache.get(channelId);
             if (ch && ch.isTextBased()) {
@@ -319,7 +323,7 @@ const commands = {
       queue.players = [];
       await updateQueueMessage(gamemode, interaction.client);
 
-      const channelId = QUEUE_CHANNELS[gamemode];
+      const channelId = resolveQueueChannel(gamemode);
       if (channelId) {
         const ch = interaction.guild.channels.cache.get(channelId);
         if (ch && ch.isTextBased()) {
@@ -408,9 +412,9 @@ async function handleQueueOpen(interaction) {
     calledPlayers: [],
   };
 
-  const channelId = QUEUE_CHANNELS[gamemode];
+  const channelId = resolveQueueChannel(gamemode);
   if (!channelId) {
-    await interaction.editReply(`❌ No channel configured for **${getGamemodeDisplay(gamemode)}**.`);
+    await interaction.editReply(`❌ No channel configured for **${getGamemodeDisplay(gamemode)}**. Run \`/detect\` to auto-configure.`);
     delete ACTIVE_QUEUES[gamemode];
     return true;
   }

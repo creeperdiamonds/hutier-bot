@@ -82,6 +82,17 @@ function loadQueueMessageIds() {
   return ids;
 }
 
+function getQueueChannels() {
+  const data = loadData();
+  return data.queue_channels || {};
+}
+
+function setQueueChannels(channelMap) {
+  const data = loadData();
+  data.queue_channels = { ...(data.queue_channels || {}), ...channelMap };
+  saveData(data);
+}
+
 function getQueuePanelMessage() {
   const data = loadData();
   const qpm = data.queue_panel_message;
@@ -170,6 +181,8 @@ module.exports = {
   getUserCooldowns,
   persistQueueMessageIds,
   loadQueueMessageIds,
+  getQueueChannels,
+  setQueueChannels,
   getQueuePanelMessage,
   setQueuePanelMessage,
   isPlayerBanned,

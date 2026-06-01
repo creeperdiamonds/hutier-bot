@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { GAMEMODES, RANKS, TIERS } = require('../config');
 const { isAdmin } = require('../permissions');
+const storage = require('../storage');
 
 const GAMEMODE_KEYS = GAMEMODES.map(g => g.toLowerCase());
 const TIER_RANKS = RANKS.filter(r => r !== 'Unranked');
@@ -79,7 +80,10 @@ async function scanServer(guild) {
   for (const channel of guild.channels.cache.values()) {
     const name = channel.name.toLowerCase();
     for (const mode of GAMEMODE_KEYS) {
-      if (name.includes(`${mode}-queue`) || name.includes(`${mode}queue`)) {
+      if (
+        name.includes(`${mode}-waitlist`) || name.includes(`${mode}-queue`) ||
+        name.includes(`${mode}queue`)
+      ) {
         detected.queueChannels[mode] = channel.id;
         break;
       }
@@ -281,6 +285,11 @@ async function handleDetectButton(interaction) {
   if (detected.staffRole) envUpdates.STAFF_ROLE_ID = detected.staffRole;
   if (detected.ticketCategory) envUpdates.TICKET_CATEGORY_ID = detected.ticketCategory;
 
+  // Save discovered queue channels to runtime storage (takes effect immediately)
+  if (Object.keys(detected.queueChannels).length > 0) {
+    storage.setQueueChannels(detected.queueChannels);
+  }
+
   const updatedCount = writeEnvUpdates(envUpdates);
 
   const lines = [];
@@ -289,6 +298,9 @@ async function handleDetectButton(interaction) {
   }
   if (failedRoles.length) lines.push(`⚠️ Failed: ${failedRoles.slice(0, 5).join(', ')}`);
   lines.push(`✅ Updated **${updatedCount}** keys in \`.env\``);
+  if (Object.keys(detected.queueChannels).length > 0) {
+    lines.push(`✅ Saved **${Object.keys(detected.queueChannels).length}** queue channels to runtime config (active immediately)`);
+  }
   lines.push('\nRestart the bot to load new role IDs.');
 
   await interaction.editReply({ content: lines.join('\n'), components: [] });
