@@ -23,6 +23,7 @@ const queueModule = require('./commands/queue');
 const ticketsModule = require('./commands/tickets');
 const setupModule = require('./commands/setup');
 const rubricModule = require('./commands/rubric');
+const verifyModule = require('./commands/verify');
 
 // Create client
 const client = new Client({
@@ -40,7 +41,7 @@ const client = new Client({
 // Build command collection
 client.commands = new Collection();
 
-const allModules = [tierlistModule, linkModule, queueModule, ticketsModule, setupModule, rubricModule];
+const allModules = [tierlistModule, linkModule, queueModule, ticketsModule, setupModule, rubricModule, verifyModule];
 for (const mod of allModules) {
   for (const [name, cmd] of Object.entries(mod.commands)) {
     client.commands.set(name, cmd);
@@ -145,10 +146,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
       // Rubric buttons
       if (await rubricModule.handleRubricButton(interaction)) return;
 
+      // Verify button
+      if (await verifyModule.handleVerifyButton(interaction)) return;
+
       // Setup buttons
       if (await setupModule.handleDetectButton(interaction)) return;
 
       console.warn(`[Interaction] Unhandled button: ${id}`);
+      return;
+    }
+
+    if (interaction.isModalSubmit()) {
+      if (await verifyModule.handleVerifyModal(interaction)) return;
       return;
     }
 
@@ -159,6 +168,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (await queueModule.handleRemovePlayerSelect(interaction)) return;
       if (await ticketsModule.handleGiveTierGmSelect(interaction)) return;
       if (await ticketsModule.handleGiveTierRankSelect(interaction)) return;
+      if (await verifyModule.handleVerifyTypeSelect(interaction)) return;
 
       console.warn(`[Interaction] Unhandled select: ${id}`);
       return;

@@ -30,6 +30,7 @@ function initDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       discord_id TEXT NOT NULL UNIQUE,
       minecraft_name TEXT NOT NULL,
+      account_type TEXT,
       linked_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_linked_discord ON linked_accounts(discord_id);
@@ -53,6 +54,11 @@ function initDb() {
       PRIMARY KEY (tester_id, month_key)
     );
   `);
+
+  // Add account_type column to existing databases that don't have it yet
+  try {
+    db.exec(`ALTER TABLE linked_accounts ADD COLUMN account_type TEXT`);
+  } catch {}
 
   console.log(`[DB] Initialized: ${DB_PATH}`);
   return db;
@@ -152,13 +158,15 @@ function getAllLinkedAccounts() {
   return getDb().prepare('SELECT * FROM linked_accounts').all();
 }
 
-function linkAccount(discordId, minecraftName) {
+function linkAccount(discordId, minecraftName, accountType) {
   try {
     getDb().prepare(`
-      INSERT INTO linked_accounts (discord_id, minecraft_name)
-      VALUES (?, ?)
-      ON CONFLICT(discord_id) DO UPDATE SET minecraft_name = excluded.minecraft_name
-    `).run(String(discordId), minecraftName);
+      INSERT INTO linked_accounts (discord_id, minecraft_name, account_type)
+      VALUES (?, ?, ?)
+      ON CONFLICT(discord_id) DO UPDATE SET
+        minecraft_name = excluded.minecraft_name,
+        account_type = excluded.account_type
+    `).run(String(discordId), minecraftName, accountType || null);
     return true;
   } catch (e) {
     console.error('[DB] linkAccount error:', e);

@@ -15,6 +15,7 @@ const BOT_API_KEY = process.env.BOT_API_KEY || '';
 const DB_PATH = process.env.DB_PATH || require('path').join(__dirname, '..', 'tierlist.db');
 const COOLDOWN_SECONDS = parseInt(process.env.COOLDOWN_SECONDS || String(30 * 24 * 60 * 60), 10);
 const TEST_LOGS_CHANNEL_ID = process.env.TEST_LOGS_CHANNEL_ID || '';
+const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID || '';
 const LINK_CODE_LENGTH = 8;
 const LINK_CODE_EXPIRY_MINUTES = 10;
 const DATA_FILE = require('path').join(__dirname, 'data.json');
@@ -208,6 +209,7 @@ module.exports = {
   TICKET_CATEGORY_ID,
   TIER_RESULTS_CHANNEL_ID,
   TEST_LOGS_CHANNEL_ID,
+  VERIFIED_ROLE_ID,
   WEBSITE_URL,
   BOT_API_KEY,
   DB_PATH,
