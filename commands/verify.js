@@ -11,7 +11,6 @@ const {
   TextInputBuilder,
   TextInputStyle,
 } = require('discord.js');
-const { VERIFIED_ROLE_ID } = require('../config');
 const db = require('../database');
 const { isAdmin } = require('../permissions');
 
@@ -176,20 +175,6 @@ async function handleVerifyTypeSelect(interaction) {
 
   db.linkAccount(interaction.user.id, ign, accountType);
 
-  // Assign Verified role if configured
-  let roleNote = '';
-  if (VERIFIED_ROLE_ID && interaction.guild) {
-    const role = interaction.guild.roles.cache.get(VERIFIED_ROLE_ID);
-    if (role) {
-      try {
-        await interaction.member.roles.add(role, 'Account verified');
-        roleNote = `\nYou have been given the **${role.name}** role.`;
-      } catch (e) {
-        roleNote = `\n⚠️ Could not assign Verified role: ${e.message}`;
-      }
-    }
-  }
-
   const embed = new EmbedBuilder()
     .setTitle('✅ Verification Complete')
     .setColor(0x2ecc71)
@@ -201,7 +186,6 @@ async function handleVerifyTypeSelect(interaction) {
     .setFooter({ text: 'You can re-verify anytime to update your info.' });
 
   await interaction.update({
-    content: roleNote || null,
     embeds: [embed],
     components: [],
   });
