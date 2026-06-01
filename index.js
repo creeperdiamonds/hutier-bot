@@ -21,6 +21,7 @@ const linkModule = require('./commands/link');
 const queueModule = require('./commands/queue');
 const ticketsModule = require('./commands/tickets');
 const setupModule = require('./commands/setup');
+const rubricModule = require('./commands/rubric');
 
 // Create client
 const client = new Client({
@@ -38,8 +39,7 @@ const client = new Client({
 // Build command collection
 client.commands = new Collection();
 
-// Flatten all commands from all modules
-const allModules = [tierlistModule, linkModule, queueModule, ticketsModule, setupModule];
+const allModules = [tierlistModule, linkModule, queueModule, ticketsModule, setupModule, rubricModule];
 for (const mod of allModules) {
   for (const [name, cmd] of Object.entries(mod.commands)) {
     client.commands.set(name, cmd);
@@ -68,19 +68,37 @@ async function registerCommands() {
 client.once(Events.ClientReady, async (c) => {
   console.log(`[Bot] Logged in as ${c.user.tag}`);
 
-  // Initialize database
   initDb();
-
-  // Register commands
   await registerCommands();
-
-  // Load queue state
   queueModule.loadState();
-
-  // Start HTTP server
   await startServer(c);
 
   console.log('[Bot] Ready!');
+});
+
+// --- Event: GuildMemberRemove (auto-remove from queues) ---
+client.on(Events.GuildMemberRemove, async (member) => {
+  const { ACTIVE_QUEUES, updateQueueMessage } = queueModule;
+  for (const [gamemode, queue] of Object.entries(ACTIVE_QUEUES)) {
+    let changed = false;
+
+    const pi = queue.players.findIndex(p => p.discordId === member.id);
+    if (pi >= 0) {
+      queue.players.splice(pi, 1);
+      changed = true;
+      console.log(`[Queue] Auto-removed ${member.displayName} from ${gamemode} queue (left server)`);
+    }
+
+    const ti = queue.testers.findIndex(t => t.discordId === member.id);
+    if (ti >= 0) {
+      queue.testers.splice(ti, 1);
+      changed = true;
+    }
+
+    if (changed) {
+      await updateQueueMessage(gamemode, member.client).catch(() => {});
+    }
+  }
 });
 
 // --- Event: Interaction ---
@@ -113,7 +131,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       // Ticket buttons
       if (await ticketsModule.handleTicketOpen(interaction)) return;
       if (await ticketsModule.handleTicketClose(interaction)) return;
+      if (await ticketsModule.handleTicketDismiss(interaction)) return;
       if (await ticketsModule.handleGiveTier(interaction)) return;
+
+      // Rubric buttons
+      if (await rubricModule.handleRubricButton(interaction)) return;
 
       // Setup buttons
       if (await setupModule.handleDetectButton(interaction)) return;
@@ -126,6 +148,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const id = interaction.customId;
 
       if (await queueModule.handlePingSelect(interaction)) return;
+      if (await queueModule.handleRemovePlayerSelect(interaction)) return;
       if (await ticketsModule.handleGiveTierGmSelect(interaction)) return;
       if (await ticketsModule.handleGiveTierRankSelect(interaction)) return;
 

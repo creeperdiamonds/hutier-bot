@@ -9,6 +9,7 @@ const {
   StringSelectMenuOptionBuilder,
   ChannelType,
   PermissionFlagsBits,
+  AttachmentBuilder,
 } = require('discord.js');
 const {
   GAMEMODES,
@@ -17,6 +18,7 @@ const {
   TICKET_CATEGORY_ID,
   STAFF_ROLE_ID,
   TIER_RESULTS_CHANNEL_ID,
+  TEST_LOGS_CHANNEL_ID,
   getGamemodeDisplay,
   getTicketRoundsDisplay,
 } = require('../config');
@@ -24,13 +26,63 @@ const db = require('../database');
 const storage = require('../storage');
 const { isStaff, canOpenTicket } = require('../permissions');
 
-// Build the close ticket row (used by queue.js too)
+// Save a transcript of the channel to the test logs channel
+async function saveTranscript(channel, guild, metadata) {
+  if (!TEST_LOGS_CHANNEL_ID) return;
+  const logChannel = guild.channels.cache.get(TEST_LOGS_CHANNEL_ID);
+  if (!logChannel || !logChannel.isTextBased()) return;
+
+  try {
+    const messages = await channel.messages.fetch({ limit: 100 });
+    const sorted = [...messages.values()].reverse();
+
+    const lines = sorted.map(msg => {
+      const time = new Date(msg.createdTimestamp).toISOString().replace('T', ' ').slice(0, 19);
+      const author = msg.member ? msg.member.displayName : (msg.author ? msg.author.username : 'Unknown');
+      let content = msg.content || '';
+      if (msg.embeds.length > 0) content += (content ? ' ' : '') + `[${msg.embeds.length} embed(s)]`;
+      if (msg.attachments.size > 0) content += (content ? ' ' : '') + `[${msg.attachments.size} file(s)]`;
+      return `[${time}] ${author}: ${content}`;
+    });
+
+    const headerLines = [
+      `# Transcript: ${channel.name}`,
+      metadata.gamemode ? `Gamemode: ${metadata.gamemode}` : null,
+      metadata.player ? `Player: ${metadata.player}` : null,
+      metadata.tester ? `Tester: ${metadata.tester}` : null,
+      metadata.result ? `Result: ${metadata.result}` : null,
+      '',
+    ].filter(l => l !== null);
+
+    const text = headerLines.join('\n') + lines.join('\n');
+    const buf = Buffer.from(text, 'utf8');
+    const file = new AttachmentBuilder(buf, { name: `transcript-${channel.name}.txt` });
+
+    const logEmbed = new EmbedBuilder()
+      .setTitle('Test Session Transcript')
+      .setColor(metadata.result ? 0x2ecc71 : 0x95a5a6)
+      .setFooter({ text: new Date().toUTCString() });
+
+    for (const [key, val] of Object.entries(metadata)) {
+      if (val) logEmbed.addFields({ name: key.charAt(0).toUpperCase() + key.slice(1), value: val, inline: true });
+    }
+
+    await logChannel.send({ embeds: [logEmbed], files: [file] });
+  } catch (e) {
+    console.error('[Tickets] Transcript save error:', e.message);
+  }
+}
+
 function buildCloseTicketRow(ownerId, modeKey) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`ticket_close:${ownerId}:${modeKey}`)
       .setLabel('Close Ticket')
       .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`ticket_dismiss:${ownerId}:${modeKey}`)
+      .setLabel('Dismiss (No Cooldown)')
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`ticket_give_tier:${ownerId}:${modeKey}`)
       .setLabel('Give Tier')
@@ -39,7 +91,6 @@ function buildCloseTicketRow(ownerId, modeKey) {
 }
 
 const commands = {
-  // /ticketpanel
   ticketpanel: {
     data: new SlashCommandBuilder()
       .setName('ticketpanel')
@@ -53,7 +104,6 @@ const commands = {
         .setDescription('Click one of the buttons below to request a test for that gamemode.')
         .setColor(0x5865F2);
 
-      // Max 5 buttons per row, 5 rows = 25 buttons
       const rows = [];
       let currentRow = new ActionRowBuilder();
       let count = 0;
@@ -93,7 +143,6 @@ async function handleTicketOpen(interaction) {
     return true;
   }
 
-  // Must have linked account
   const linked = db.getLinkedAccount(interaction.user.id);
   if (!linked) {
     await interaction.reply({
@@ -103,7 +152,6 @@ async function handleTicketOpen(interaction) {
     return true;
   }
 
-  // Ban check
   if (storage.isPlayerBanned(linked.minecraft_name)) {
     const info = storage.getBanInfo(linked.minecraft_name);
     await interaction.reply({
@@ -113,7 +161,6 @@ async function handleTicketOpen(interaction) {
     return true;
   }
 
-  // Rank check
   const test = db.getTestByUsernameAndMode(linked.minecraft_name, getGamemodeDisplay(gamemode));
   const rank = test ? test.rank : 'Unranked';
   if (!canOpenTicket(rank)) {
@@ -124,7 +171,6 @@ async function handleTicketOpen(interaction) {
     return true;
   }
 
-  // Cooldown check
   const cdLeft = storage.cooldownLeft(interaction.user.id, gamemode);
   if (cdLeft > 0) {
     const d = Math.floor(cdLeft / 86400);
@@ -136,7 +182,6 @@ async function handleTicketOpen(interaction) {
     return true;
   }
 
-  // Check for existing open ticket
   const existingChannelId = storage.getOpenTicketChannelId(interaction.user.id, gamemode);
   if (existingChannelId) {
     const existingCh = guild.channels.cache.get(existingChannelId);
@@ -148,7 +193,6 @@ async function handleTicketOpen(interaction) {
     }
   }
 
-  // Create ticket channel
   const categoryId = TICKET_CATEGORY_ID;
   const category = categoryId ? guild.channels.cache.get(categoryId) : null;
   if (categoryId && (!category || category.type !== ChannelType.GuildCategory)) {
@@ -191,6 +235,7 @@ async function handleTicketOpen(interaction) {
       .setTitle('Test Request')
       .setDescription('A tester will be with you soon.')
       .setColor(0x5865F2)
+      .setThumbnail(`https://minotar.net/helm/${linked.minecraft_name}/128.png`)
       .addFields(
         { name: 'Gamemode', value: getGamemodeDisplay(gamemode), inline: true },
         { name: 'Minecraft Name', value: `\`${linked.minecraft_name}\``, inline: true },
@@ -232,18 +277,28 @@ async function handleTicketClose(interaction) {
 
   await interaction.reply({ content: '✅ Closing ticket in 5 seconds...', ephemeral: true });
 
-  // Parse from channel topic if available
   let actualOwnerId = ownerId;
   let actualMode = modeKey;
+  let mcName = null;
   if (channel.topic) {
     const ownerMatch = channel.topic.match(/owner=(\d+)/);
     const modeMatch = channel.topic.match(/mode=([^\s|]+)/);
+    const mcMatch = channel.topic.match(/mc=([^\s|]+)/);
     if (ownerMatch) actualOwnerId = ownerMatch[1];
     if (modeMatch) actualMode = modeMatch[1];
+    if (mcMatch) mcName = mcMatch[1];
   }
 
   storage.setLastClosed(actualOwnerId, actualMode, Math.floor(Date.now() / 1000));
   storage.setOpenTicketChannelId(actualOwnerId, actualMode, null);
+
+  const testerName = interaction.member ? interaction.member.displayName : interaction.user.username;
+  await saveTranscript(channel, interaction.guild, {
+    gamemode: getGamemodeDisplay(actualMode),
+    player: mcName || actualOwnerId,
+    tester: testerName,
+    result: 'Closed (no result)',
+  });
 
   setTimeout(async () => {
     try {
@@ -259,6 +314,60 @@ async function handleTicketClose(interaction) {
   return true;
 }
 
+async function handleTicketDismiss(interaction) {
+  if (!interaction.customId.startsWith('ticket_dismiss:')) return false;
+  const parts = interaction.customId.split(':');
+  const ownerId = parts[1];
+  const modeKey = parts[2];
+
+  const channel = interaction.channel;
+  if (!channel || !channel.isTextBased()) {
+    await interaction.reply({ content: '❌ Not a text channel.', ephemeral: true });
+    return true;
+  }
+
+  if (!isStaff(interaction.member)) {
+    await interaction.reply({ content: '❌ Staff only can dismiss tickets.', ephemeral: true });
+    return true;
+  }
+
+  await interaction.reply({ content: '✅ Dismissing ticket (no cooldown applied) in 5 seconds...', ephemeral: true });
+
+  let actualOwnerId = ownerId;
+  let actualMode = modeKey;
+  let mcName = null;
+  if (channel.topic) {
+    const ownerMatch = channel.topic.match(/owner=(\d+)/);
+    const modeMatch = channel.topic.match(/mode=([^\s|]+)/);
+    const mcMatch = channel.topic.match(/mc=([^\s|]+)/);
+    if (ownerMatch) actualOwnerId = ownerMatch[1];
+    if (modeMatch) actualMode = modeMatch[1];
+    if (mcMatch) mcName = mcMatch[1];
+  }
+
+  // Clear open ticket state but do NOT apply cooldown
+  storage.setOpenTicketChannelId(actualOwnerId, actualMode, null);
+
+  const testerName = interaction.member ? interaction.member.displayName : interaction.user.username;
+  await saveTranscript(channel, interaction.guild, {
+    gamemode: getGamemodeDisplay(actualMode),
+    player: mcName || actualOwnerId,
+    tester: testerName,
+    result: 'Dismissed (no-show, no cooldown)',
+  });
+
+  setTimeout(async () => {
+    try {
+      await channel.delete('Ticket dismissed');
+    } catch (e) {
+      console.error('[Tickets] Error deleting channel:', e.message);
+    }
+  }, 5000);
+
+  return true;
+}
+
+// Step 1: staff clicks "Give Tier" → shows gamemode select
 async function handleGiveTier(interaction) {
   if (!interaction.customId.startsWith('ticket_give_tier:')) return false;
   const parts = interaction.customId.split(':');
@@ -286,7 +395,6 @@ async function handleGiveTier(interaction) {
     return true;
   }
 
-  // Build gamemode select (if mode unknown) + tier select
   const gamemodeOptions = GAMEMODES.map(gm =>
     new StringSelectMenuOptionBuilder()
       .setLabel(gm)
@@ -294,73 +402,63 @@ async function handleGiveTier(interaction) {
       .setDefault(gm.toLowerCase() === actualMode)
   );
 
+  const gmSelect = new StringSelectMenuBuilder()
+    .setCustomId(`give_tier_gm:${actualOwnerId}:${linked.minecraft_name}`)
+    .setPlaceholder('Select gamemode...')
+    .addOptions(gamemodeOptions);
+
+  const row = new ActionRowBuilder().addComponents(gmSelect);
+  await interaction.reply({ content: 'Step 1 — Select the gamemode:', components: [row], ephemeral: true });
+  return true;
+}
+
+// Step 2: gamemode picked → show rank select with gamemode baked into customId
+async function handleGiveTierGmSelect(interaction) {
+  if (!interaction.customId.startsWith('give_tier_gm:')) return false;
+  const parts = interaction.customId.split(':');
+  const ownerId = parts[1];
+  const minecraftName = parts[2];
+
+  const selectedGm = interaction.values[0];
+
   const tierOptions = RANKS.filter(r => r !== 'Unranked').map(r =>
     new StringSelectMenuOptionBuilder().setLabel(r).setValue(r)
   );
 
-  const gmSelect = new StringSelectMenuBuilder()
-    .setCustomId(`give_tier_gm:${actualOwnerId}:${linked.minecraft_name}:${actualMode}`)
-    .setPlaceholder('Gamemode...')
-    .addOptions(gamemodeOptions);
-
   const tierSelect = new StringSelectMenuBuilder()
-    .setCustomId(`give_tier_rank:${actualOwnerId}:${linked.minecraft_name}:${actualMode}`)
-    .setPlaceholder('Achieved Rank...')
+    .setCustomId(`give_tier_rank:${ownerId}:${minecraftName}:${selectedGm}`)
+    .setPlaceholder('Select achieved rank...')
     .addOptions(tierOptions);
 
-  const row1 = new ActionRowBuilder().addComponents(gmSelect);
-  const row2 = new ActionRowBuilder().addComponents(tierSelect);
-
-  await interaction.reply({ content: 'Select the gamemode and tier:', components: [row1, row2], ephemeral: true });
+  const row = new ActionRowBuilder().addComponents(tierSelect);
+  await interaction.update({
+    content: `Gamemode: **${getGamemodeDisplay(selectedGm)}**\nStep 2 — Select the rank:`,
+    components: [row],
+  });
   return true;
 }
 
-async function handleGiveTierGmSelect(interaction) {
-  if (!interaction.customId.startsWith('give_tier_gm:')) return false;
-  // Just defer — user will pick rank next
-  await interaction.deferUpdate();
-  return true;
-}
-
+// Step 3: rank picked → process result
 async function handleGiveTierRankSelect(interaction) {
   if (!interaction.customId.startsWith('give_tier_rank:')) return false;
   const parts = interaction.customId.split(':');
   const ownerId = parts[1];
   const minecraftName = parts[2];
-  let modeKey = parts[3];
+  const selectedMode = parts[3];
 
-  // Try to get selected gamemode from the message's other select if present
   const selectedRank = interaction.values[0];
-
-  // Check if there's a gamemode select in the message
-  const msg = interaction.message;
-  let selectedMode = modeKey;
-  if (msg && msg.components) {
-    for (const row of msg.components) {
-      for (const comp of row.components) {
-        if (comp.customId && comp.customId.startsWith('give_tier_gm:') && comp.type === 3) {
-          // StringSelect, check values
-          if (comp.values && comp.values.length > 0) {
-            selectedMode = comp.values[0];
-          }
-        }
-      }
-    }
-  }
 
   await interaction.deferUpdate();
 
   const tester = interaction.member;
   const modeDisplay = getGamemodeDisplay(selectedMode);
 
-  // Prev rank
   const prev = db.getTestByUsernameAndMode(minecraftName, modeDisplay);
   const prevRank = prev ? prev.rank : 'Unranked';
   const prevPoints = POINTS[prevRank] || 0;
   const newPoints = POINTS[selectedRank] || 0;
   const diff = newPoints - prevPoints;
 
-  // Upsert
   db.upsertTest({
     username: minecraftName,
     mode: modeDisplay,
@@ -370,11 +468,12 @@ async function handleGiveTierRankSelect(interaction) {
     ts: Math.floor(Date.now() / 1000),
   });
 
-  // Set cooldown
+  // Track tester activity
+  db.incrementTesterStat(tester.id, tester.displayName || tester.user.username);
+
   storage.setLastClosed(ownerId, selectedMode, Math.floor(Date.now() / 1000));
   storage.setOpenTicketChannelId(ownerId, selectedMode, null);
 
-  // Build embed
   const embed = new EmbedBuilder()
     .setTitle(`${minecraftName} Test Result 🏆`)
     .setColor(0x2f3136)
@@ -388,7 +487,6 @@ async function handleGiveTierRankSelect(interaction) {
       { name: 'Points:', value: diff >= 0 ? `+${diff}` : String(diff), inline: false },
     );
 
-  // Send to results channel
   if (TIER_RESULTS_CHANNEL_ID) {
     const guild = interaction.guild;
     const ch = guild.channels.cache.get(TIER_RESULTS_CHANNEL_ID);
@@ -409,12 +507,21 @@ async function handleGiveTierRankSelect(interaction) {
     }
   }
 
+  // Save transcript
+  if (interaction.channel) {
+    await saveTranscript(interaction.channel, interaction.guild, {
+      gamemode: modeDisplay,
+      player: minecraftName,
+      tester: tester.displayName || tester.user.username,
+      result: `${prevRank} → ${selectedRank} (${diff >= 0 ? '+' : ''}${diff} pts)`,
+    });
+  }
+
   await interaction.followUp({
     content: `✅ Tier set: **${selectedRank}** for **${minecraftName}** in **${modeDisplay}**. Channel closes in 5 seconds.`,
     ephemeral: true,
   });
 
-  // Close channel after 5 seconds
   if (interaction.channel) {
     setTimeout(async () => {
       try { await interaction.channel.delete('Tier given, ticket closed'); } catch {}
@@ -429,6 +536,7 @@ module.exports = {
   buildCloseTicketRow,
   handleTicketOpen,
   handleTicketClose,
+  handleTicketDismiss,
   handleGiveTier,
   handleGiveTierGmSelect,
   handleGiveTierRankSelect,

@@ -14,6 +14,7 @@ const WEBSITE_URL = (process.env.WEBSITE_URL || '').replace(/\/$/, '');
 const BOT_API_KEY = process.env.BOT_API_KEY || '';
 const DB_PATH = process.env.DB_PATH || require('path').join(__dirname, '..', 'tierlist.db');
 const COOLDOWN_SECONDS = parseInt(process.env.COOLDOWN_SECONDS || String(30 * 24 * 60 * 60), 10);
+const TEST_LOGS_CHANNEL_ID = process.env.TEST_LOGS_CHANNEL_ID || '';
 const LINK_CODE_LENGTH = 8;
 const LINK_CODE_EXPIRY_MINUTES = 10;
 const DATA_FILE = require('path').join(__dirname, 'data.json');
@@ -147,6 +148,29 @@ function getGamemodeColor(gamemode) {
   return GAMEMODE_COLORS[(gamemode || '').toLowerCase()] || 0x5865F2;
 }
 
+const RANK_THRESHOLDS = [
+  [350, 'Combat Grandmaster'],
+  [200, 'Combat Master'],
+  [100, 'Combat Ace'],
+  [50, 'Combat Cadet'],
+  [20, 'Combat Rookie'],
+];
+
+function getRankName(totalPoints) {
+  for (const [threshold, name] of RANK_THRESHOLDS) {
+    if (totalPoints >= threshold) return name;
+  }
+  return 'Unranked';
+}
+
+function getRankProgress(totalPoints) {
+  if (totalPoints >= 350) return '🎉 Max Rank — Combat Grandmaster';
+  for (const [threshold, name] of RANK_THRESHOLDS) {
+    if (totalPoints < threshold) return `${threshold - totalPoints} pts to **${name}**`;
+  }
+  return '';
+}
+
 const TICKET_ROUNDS = {
   vanilla: ['FT4', 'FT3', null],
   diasmp: ['FT4', 'FT3', 'FT2'],
@@ -183,6 +207,7 @@ module.exports = {
   ALLOWED_USER_IDS,
   TICKET_CATEGORY_ID,
   TIER_RESULTS_CHANNEL_ID,
+  TEST_LOGS_CHANNEL_ID,
   WEBSITE_URL,
   BOT_API_KEY,
   DB_PATH,
@@ -206,4 +231,7 @@ module.exports = {
   getTierRoleId,
   getGamemodeColor,
   getTicketRoundsDisplay,
+  getRankName,
+  getRankProgress,
+  RANK_THRESHOLDS,
 };

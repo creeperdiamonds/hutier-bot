@@ -44,6 +44,14 @@ function initDb() {
       used INTEGER DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_pending_code ON pending_codes(code);
+
+    CREATE TABLE IF NOT EXISTS tester_stats (
+      tester_id TEXT NOT NULL,
+      month_key TEXT NOT NULL,
+      tester_name TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (tester_id, month_key)
+    );
   `);
 
   console.log(`[DB] Initialized: ${DB_PATH}`);
@@ -208,6 +216,31 @@ function verifyCode(code) {
   return row.discord_id;
 }
 
+// --- Tester Stats ---
+
+function incrementTesterStat(testerId, testerName) {
+  const now = new Date();
+  const monthKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+
+  const upsert = getDb().prepare(`
+    INSERT INTO tester_stats (tester_id, month_key, tester_name, count)
+    VALUES (?, ?, ?, 1)
+    ON CONFLICT(tester_id, month_key) DO UPDATE SET
+      count = count + 1,
+      tester_name = excluded.tester_name
+  `);
+
+  upsert.run(String(testerId), 'alltime', testerName);
+  upsert.run(String(testerId), monthKey, testerName);
+}
+
+function getTesterStats(monthKey) {
+  const key = monthKey || 'alltime';
+  return getDb().prepare(
+    'SELECT * FROM tester_stats WHERE month_key = ? ORDER BY count DESC'
+  ).all(key);
+}
+
 function getDb_raw() { return db; }
 
 module.exports = {
@@ -229,4 +262,6 @@ module.exports = {
   createPendingCode,
   getPendingCodeByDiscord,
   verifyCode,
+  incrementTesterStat,
+  getTesterStats,
 };

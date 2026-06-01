@@ -216,6 +216,117 @@ const commands = {
     },
   },
 
+  // /myqueue
+  myqueue: {
+    data: new SlashCommandBuilder()
+      .setName('myqueue')
+      .setDescription('See all queues you are currently in'),
+
+    async execute(interaction) {
+      await interaction.deferReply({ ephemeral: true });
+
+      const lines = [];
+      for (const [gamemode, queue] of Object.entries(ACTIVE_QUEUES)) {
+        const pi = queue.players.findIndex(p => p.discordId === interaction.user.id);
+        const ti = queue.testers.findIndex(t => t.discordId === interaction.user.id);
+        if (pi >= 0) lines.push(`**${getGamemodeDisplay(gamemode)}**: Position #${pi + 1} of ${queue.players.length}`);
+        else if (ti >= 0) lines.push(`**${getGamemodeDisplay(gamemode)}**: Tester`);
+      }
+
+      if (!lines.length) {
+        return interaction.editReply('You are not in any queues.');
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('Your Queue Positions')
+        .setDescription(lines.join('\n'))
+        .setColor(0x5865F2);
+
+      await interaction.editReply({ embeds: [embed] });
+    },
+  },
+
+  // /removeplayer
+  removeplayer: {
+    data: new SlashCommandBuilder()
+      .setName('removeplayer')
+      .setDescription('Remove a specific player from a queue (staff/tester only)')
+      .addStringOption(o => o.setName('gamemode').setDescription('Gamemode').setRequired(true)
+        .addChoices(...GAMEMODES.map(g => ({ name: g, value: g.toLowerCase() })))),
+
+    async execute(interaction) {
+      await interaction.deferReply({ ephemeral: true });
+
+      const gamemode = interaction.options.getString('gamemode');
+      const queue = ACTIVE_QUEUES[gamemode];
+
+      if (!queue) {
+        return interaction.editReply(`❌ **${getGamemodeDisplay(gamemode)}** queue is not open.`);
+      }
+
+      if (!isStaff(interaction.member) && !isGamemodeTester(interaction.member, gamemode)) {
+        return interaction.editReply('❌ Staff or testers only.');
+      }
+
+      if (!queue.players.length) {
+        return interaction.editReply('❌ No players in this queue.');
+      }
+
+      const options = queue.players.map((p, i) => {
+        const member = interaction.guild.members.cache.get(p.discordId);
+        const nick = member ? member.displayName : p.discordId;
+        return new StringSelectMenuOptionBuilder()
+          .setLabel(`#${i + 1} — ${nick} (${p.minecraftName})`)
+          .setValue(p.discordId);
+      });
+
+      const select = new StringSelectMenuBuilder()
+        .setCustomId(`queue_remove_player:${gamemode}`)
+        .setPlaceholder('Select player to remove...')
+        .addOptions(options);
+
+      const row = new ActionRowBuilder().addComponents(select);
+      await interaction.editReply({ content: 'Select a player to remove:', components: [row] });
+    },
+  },
+
+  // /clearqueue
+  clearqueue: {
+    data: new SlashCommandBuilder()
+      .setName('clearqueue')
+      .setDescription('Clear all players from a queue (staff only)')
+      .addStringOption(o => o.setName('gamemode').setDescription('Gamemode').setRequired(true)
+        .addChoices(...GAMEMODES.map(g => ({ name: g, value: g.toLowerCase() })))),
+
+    async execute(interaction) {
+      await interaction.deferReply({ ephemeral: true });
+      if (!isStaff(interaction.member)) {
+        return interaction.editReply('❌ Staff only.');
+      }
+
+      const gamemode = interaction.options.getString('gamemode');
+      const queue = ACTIVE_QUEUES[gamemode];
+
+      if (!queue) {
+        return interaction.editReply(`❌ **${getGamemodeDisplay(gamemode)}** queue is not open.`);
+      }
+
+      const count = queue.players.length;
+      queue.players = [];
+      await updateQueueMessage(gamemode, interaction.client);
+
+      const channelId = QUEUE_CHANNELS[gamemode];
+      if (channelId) {
+        const ch = interaction.guild.channels.cache.get(channelId);
+        if (ch && ch.isTextBased()) {
+          await ch.send(`📋 Queue cleared by <@${interaction.user.id}>. **${count}** player(s) were removed.`).catch(() => {});
+        }
+      }
+
+      await interaction.editReply(`✅ Cleared **${count}** player(s) from the **${getGamemodeDisplay(gamemode)}** queue.`);
+    },
+  },
+
   // /pingpanel
   pingpanel: {
     data: new SlashCommandBuilder()
@@ -570,6 +681,35 @@ async function handleQueueNext(interaction) {
   return true;
 }
 
+async function handleRemovePlayerSelect(interaction) {
+  if (!interaction.customId.startsWith('queue_remove_player:')) return false;
+  const gamemode = interaction.customId.split(':')[1];
+
+  const queue = ACTIVE_QUEUES[gamemode];
+  if (!queue) {
+    await interaction.update({ content: '❌ Queue no longer active.', components: [] });
+    return true;
+  }
+
+  const targetId = interaction.values[0];
+  const pi = queue.players.findIndex(p => p.discordId === targetId);
+  if (pi < 0) {
+    await interaction.update({ content: '❌ Player not found in queue (already removed?)', components: [] });
+    return true;
+  }
+
+  const removed = queue.players.splice(pi, 1)[0];
+  await updateQueueMessage(gamemode, interaction.client);
+
+  const member = interaction.guild.members.cache.get(targetId);
+  const name = member ? member.displayName : removed.minecraftName;
+  await interaction.update({
+    content: `✅ Removed **${name}** from the **${getGamemodeDisplay(gamemode)}** queue.`,
+    components: [],
+  });
+  return true;
+}
+
 async function handlePingSelect(interaction) {
   if (interaction.customId !== 'ping_select') return false;
 
@@ -641,6 +781,7 @@ module.exports = {
   handleQueueCloseConfirm,
   handleQueueCloseCancel,
   handleQueueNext,
+  handleRemovePlayerSelect,
   handlePingSelect,
   handlePingClearAll,
 };

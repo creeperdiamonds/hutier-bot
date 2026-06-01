@@ -11,6 +11,7 @@ const {
   RANKS, POINTS, GAMEMODES, TIERS,
   TIER_RESULTS_CHANNEL_ID, COOLDOWN_SECONDS,
   getGamemodeDisplay, getTierRoleId, GAMEMODE_TIER_ROLES,
+  getRankName, getRankProgress,
 } = require('../config');
 const db = require('../database');
 const storage = require('../storage');
@@ -117,6 +118,9 @@ const commands = {
         return interaction.editReply('❌ Failed to save test result to database.');
       }
 
+      // Track tester activity
+      db.incrementTesterStat(tester.id, testerMember ? testerMember.displayName : tester.username);
+
       // Set cooldown for owner if in a ticket channel
       const ch = interaction.channel;
       if (ch && ch.topic && ch.topic.includes('owner=')) {
@@ -201,14 +205,18 @@ const commands = {
       const globalRank = rankIdx >= 0 ? rankIdx + 1 : null;
 
       const displayName = tests[0].username;
+      const rankName = getRankName(totalPoints);
+      const rankProgress = getRankProgress(totalPoints);
+
       const embed = new EmbedBuilder()
         .setTitle(`${displayName}'s Profile`)
         .setColor(0x5865F2)
         .setThumbnail(`https://minotar.net/helm/${displayName}/128.png`)
         .setDescription(modeLines.join('\n'));
 
-      let stats = `**Total Points:** ${totalPoints}`;
+      let stats = `**Total Points:** ${totalPoints}\n**Rank:** ${rankName}`;
       if (globalRank) stats += `\n**Global Rank:** #${globalRank}`;
+      if (rankProgress) stats += `\n**Progress:** ${rankProgress}`;
       embed.addFields({ name: 'Statistics', value: stats, inline: false });
 
       await interaction.editReply({ embeds: [embed] });
@@ -602,6 +610,80 @@ const commands = {
       }
 
       await interaction.followUp({ content: summary, ephemeral: true });
+    },
+  },
+
+  // /testingleaderboard
+  testingleaderboard: {
+    data: new SlashCommandBuilder()
+      .setName('testingleaderboard')
+      .setDescription('View the tester activity leaderboard'),
+
+    async execute(interaction) {
+      await interaction.deferReply({ ephemeral: false });
+
+      const now = new Date();
+      const monthKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+      const monthName = now.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+
+      const alltime = db.getTesterStats('alltime');
+      const monthly = db.getTesterStats(monthKey);
+
+      const medals = ['🥇', '🥈', '🥉'];
+
+      function formatRows(rows) {
+        if (!rows.length) return 'No data yet.';
+        return rows.slice(0, 10).map((row, i) => {
+          const medal = medals[i] || `#${i + 1}`;
+          const member = interaction.guild.members.cache.get(row.tester_id);
+          const name = member ? `<@${row.tester_id}>` : `**${row.tester_name}**`;
+          return `${medal} ${name} — **${row.count}** tests`;
+        }).join('\n');
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('Testing Leaderboard')
+        .setColor(0xFFD700)
+        .addFields(
+          { name: 'All Time', value: formatRows(alltime), inline: false },
+          { name: '​', value: '━━━━━━━━━━━━━━━━━━━━━━━━━━━━', inline: false },
+          { name: `${monthName} Leaderboard`, value: formatRows(monthly), inline: false },
+        )
+        .setFooter({ text: `SM Tierlist • ${monthName}` });
+
+      await interaction.editReply({ embeds: [embed] });
+    },
+  },
+
+  // /resetcooldown
+  resetcooldown: {
+    data: new SlashCommandBuilder()
+      .setName('resetcooldown')
+      .setDescription('Reset a player\'s cooldown for a gamemode (staff only)')
+      .addUserOption(o => o.setName('user').setDescription('Discord user').setRequired(true))
+      .addStringOption(o => o.setName('gamemode').setDescription('Gamemode (omit for all)').setRequired(false)
+        .addChoices(...GAMEMODES.map(g => ({ name: g, value: g.toLowerCase() })))),
+
+    async execute(interaction) {
+      await interaction.deferReply({ ephemeral: true });
+      if (!isStaff(interaction.member)) {
+        return interaction.editReply('❌ Staff only.');
+      }
+
+      const targetUser = interaction.options.getUser('user');
+      const gamemode = interaction.options.getString('gamemode');
+
+      if (gamemode) {
+        storage.setLastClosed(targetUser.id, gamemode, 0);
+        const targetName = (interaction.guild.members.cache.get(targetUser.id) || { displayName: targetUser.username }).displayName;
+        await interaction.editReply(`✅ Reset **${getGamemodeDisplay(gamemode)}** cooldown for **${targetName}**.`);
+      } else {
+        for (const gm of GAMEMODES) {
+          storage.setLastClosed(targetUser.id, gm.toLowerCase(), 0);
+        }
+        const targetName = (interaction.guild.members.cache.get(targetUser.id) || { displayName: targetUser.username }).displayName;
+        await interaction.editReply(`✅ Reset **all** cooldowns for **${targetName}**.`);
+      }
     },
   },
 
