@@ -122,6 +122,18 @@ async function startServer(bot) {
     res.json({ gamemode: modeDisplay, players });
   });
 
+  // POST /shutdown  — kills the process (BOTKILLER uses this)
+  app.post('/shutdown', (req, res) => {
+    const key = req.headers['x-shutdown-key'] || req.query.key;
+    const expected = process.env.SHUTDOWN_KEY;
+    if (!expected || key !== expected) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    res.json({ ok: true, message: 'Shutting down.' });
+    console.log('[Server] Remote shutdown triggered.');
+    setTimeout(() => process.exit(0), 500);
+  });
+
   // Find available port
   const basePort = parseInt(process.env.PORT || '8080', 10);
   for (let port = basePort; port < basePort + 10; port++) {
