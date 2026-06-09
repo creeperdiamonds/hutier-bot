@@ -24,7 +24,7 @@ const {
 } = require('../config');
 const db = require('../database');
 const storage = require('../storage');
-const { isStaff, canOpenTicket } = require('../permissions');
+const { isStaff, isGamemodeTester, canOpenTicket } = require('../permissions');
 
 // Save a transcript of the channel to the test logs channel
 async function saveTranscript(channel, guild, metadata) {
@@ -91,6 +91,251 @@ function buildCloseTicketRow(ownerId, modeKey) {
 }
 
 const commands = {
+  // /closeticket — close active session ticket by gamemode (slash command)
+  closeticket: {
+    data: new SlashCommandBuilder()
+      .setName('closeticket')
+      .setDescription('Close the active test ticket for a gamemode')
+      .addStringOption(o => o.setName('gamemode').setDescription('Gamemode').setRequired(true)
+        .addChoices(...GAMEMODES.map(g => ({ name: g, value: g.toLowerCase() })))),
+
+    async execute(interaction) {
+      await interaction.deferReply({ ephemeral: true });
+      const gamemode = interaction.options.getString('gamemode');
+
+      if (!isGamemodeTester(interaction.member, gamemode)) {
+        return interaction.editReply('❌ Only the gamemode tester or staff can close this ticket.');
+      }
+
+      const session = storage.getActiveSession(gamemode);
+      if (!session) {
+        return interaction.editReply(`❌ No active ticket found for **${getGamemodeDisplay(gamemode)}**.`);
+      }
+
+      const guild = interaction.guild;
+      const ticketChannel = guild.channels.cache.get(session.channel_id);
+      const linked = db.getLinkedAccount(session.player_id);
+      const mcName = linked ? linked.minecraft_name : session.player_id;
+
+      storage.setLastClosed(session.player_id, gamemode, Math.floor(Date.now() / 1000));
+      storage.setOpenTicketChannelId(session.player_id, gamemode, null);
+      storage.clearActiveSession(gamemode);
+
+      if (ticketChannel) {
+        await saveTranscript(ticketChannel, guild, {
+          gamemode: getGamemodeDisplay(gamemode),
+          player: mcName,
+          tester: interaction.member.displayName,
+          result: 'Closed via /closeticket',
+        });
+        try { await ticketChannel.send(`Ticket closed by ${interaction.user}.`); } catch {}
+        setTimeout(async () => { try { await ticketChannel.delete('Ticket closed'); } catch {} }, 3000);
+      }
+
+      await interaction.editReply(`✅ Closed **${getGamemodeDisplay(gamemode)}** ticket.`);
+    },
+  },
+
+  // /dismissticket — close without applying cooldown
+  dismissticket: {
+    data: new SlashCommandBuilder()
+      .setName('dismissticket')
+      .setDescription('Dismiss ticket without applying cooldown (no-show)')
+      .addStringOption(o => o.setName('gamemode').setDescription('Gamemode').setRequired(true)
+        .addChoices(...GAMEMODES.map(g => ({ name: g, value: g.toLowerCase() })))),
+
+    async execute(interaction) {
+      await interaction.deferReply({ ephemeral: true });
+      const gamemode = interaction.options.getString('gamemode');
+
+      if (!isGamemodeTester(interaction.member, gamemode)) {
+        return interaction.editReply('❌ Only the gamemode tester or staff can dismiss this ticket.');
+      }
+
+      const session = storage.getActiveSession(gamemode);
+      if (!session) {
+        return interaction.editReply(`❌ No active ticket for **${getGamemodeDisplay(gamemode)}**.`);
+      }
+
+      const guild = interaction.guild;
+      const ticketChannel = guild.channels.cache.get(session.channel_id);
+      const linked = db.getLinkedAccount(session.player_id);
+      const mcName = linked ? linked.minecraft_name : session.player_id;
+
+      // No cooldown
+      storage.setOpenTicketChannelId(session.player_id, gamemode, null);
+      storage.clearActiveSession(gamemode);
+
+      if (ticketChannel) {
+        await saveTranscript(ticketChannel, guild, {
+          gamemode: getGamemodeDisplay(gamemode),
+          player: mcName,
+          tester: interaction.member.displayName,
+          result: 'Dismissed (no-show, no cooldown)',
+        });
+        try { await ticketChannel.send(`Ticket dismissed by ${interaction.user} — no cooldown applied.`); } catch {}
+        setTimeout(async () => { try { await ticketChannel.delete('Ticket dismissed'); } catch {} }, 3000);
+      }
+
+      await interaction.editReply(`✅ Dismissed **${getGamemodeDisplay(gamemode)}** ticket (no cooldown).`);
+    },
+  },
+
+  // /closetest — close current ticket channel with 5s delay
+  closetest: {
+    data: new SlashCommandBuilder()
+      .setName('closetest')
+      .setDescription('Close the current test ticket channel (5-second delay)'),
+
+    async execute(interaction) {
+      if (!isStaff(interaction.member)) {
+        return interaction.reply({ content: '❌ Staff or testers only.', ephemeral: true });
+      }
+
+      const session = storage.findActiveSessionByChannel(interaction.channelId);
+      if (!session) {
+        return interaction.reply({ content: '❌ This channel is not an active test session.', ephemeral: true });
+      }
+
+      await interaction.reply({ content: '⏳ Closing ticket in 5 seconds...' });
+
+      const { gamemode } = session;
+      const linked = db.getLinkedAccount(session.player_id);
+      const mcName = linked ? linked.minecraft_name : session.player_id;
+
+      storage.setLastClosed(session.player_id, gamemode, Math.floor(Date.now() / 1000));
+      storage.setOpenTicketChannelId(session.player_id, gamemode, null);
+      storage.clearActiveSession(gamemode);
+
+      await saveTranscript(interaction.channel, interaction.guild, {
+        gamemode: getGamemodeDisplay(gamemode),
+        player: mcName,
+        tester: interaction.member.displayName,
+        result: 'Closed via /closetest',
+      });
+
+      setTimeout(async () => { try { await interaction.channel.delete('Ticket closed via /closetest'); } catch {} }, 5000);
+    },
+  },
+
+  // /forceclosetest — immediately delete the current ticket channel
+  forceclosetest: {
+    data: new SlashCommandBuilder()
+      .setName('forceclosetest')
+      .setDescription('Force-close the current test ticket channel immediately'),
+
+    async execute(interaction) {
+      if (!isStaff(interaction.member)) {
+        return interaction.reply({ content: '❌ Staff or testers only.', ephemeral: true });
+      }
+
+      const session = storage.findActiveSessionByChannel(interaction.channelId);
+      if (!session) {
+        return interaction.reply({ content: '❌ This channel is not an active test session.', ephemeral: true });
+      }
+
+      const { gamemode } = session;
+      const linked = db.getLinkedAccount(session.player_id);
+      const mcName = linked ? linked.minecraft_name : session.player_id;
+
+      storage.setLastClosed(session.player_id, gamemode, Math.floor(Date.now() / 1000));
+      storage.setOpenTicketChannelId(session.player_id, gamemode, null);
+      storage.clearActiveSession(gamemode);
+
+      await saveTranscript(interaction.channel, interaction.guild, {
+        gamemode: getGamemodeDisplay(gamemode),
+        player: mcName,
+        tester: interaction.member.displayName,
+        result: 'Force-closed via /forceclosetest',
+      });
+
+      await interaction.reply({ content: '🔴 Force-closing...' });
+      setTimeout(async () => { try { await interaction.channel.delete('Force-closed'); } catch {} }, 3000);
+    },
+  },
+
+  // /add — add a user to the current ticket channel
+  add: {
+    data: new SlashCommandBuilder()
+      .setName('add')
+      .setDescription('Add a user to this ticket channel')
+      .addUserOption(o => o.setName('user').setDescription('User to add').setRequired(true)),
+
+    async execute(interaction) {
+      if (!isStaff(interaction.member)) {
+        return interaction.reply({ content: '❌ Staff or testers only.', ephemeral: true });
+      }
+      if (!storage.findActiveSessionByChannel(interaction.channelId)) {
+        return interaction.reply({ content: '❌ This channel is not an active test session.', ephemeral: true });
+      }
+
+      const user = interaction.options.getUser('user');
+      try {
+        await interaction.channel.permissionOverwrites.create(user.id, {
+          ViewChannel: true,
+          SendMessages: true,
+          ReadMessageHistory: true,
+        });
+        await interaction.reply({ content: `✅ <@${user.id}> has been added to the ticket.` });
+      } catch (e) {
+        await interaction.reply({ content: `❌ Failed to add user: ${e.message}`, ephemeral: true });
+      }
+    },
+  },
+
+  // /remove — remove a user from the current ticket channel
+  remove: {
+    data: new SlashCommandBuilder()
+      .setName('remove')
+      .setDescription('Remove a user from this ticket channel')
+      .addUserOption(o => o.setName('user').setDescription('User to remove').setRequired(true)),
+
+    async execute(interaction) {
+      if (!isStaff(interaction.member)) {
+        return interaction.reply({ content: '❌ Staff or testers only.', ephemeral: true });
+      }
+      if (!storage.findActiveSessionByChannel(interaction.channelId)) {
+        return interaction.reply({ content: '❌ This channel is not an active test session.', ephemeral: true });
+      }
+
+      const user = interaction.options.getUser('user');
+      try {
+        await interaction.channel.permissionOverwrites.create(user.id, {
+          ViewChannel: false,
+          SendMessages: false,
+        });
+        await interaction.reply({ content: `✅ <@${user.id}> has been removed from the ticket.` });
+      } catch (e) {
+        await interaction.reply({ content: `❌ Failed to remove user: ${e.message}`, ephemeral: true });
+      }
+    },
+  },
+
+  // /passeval — rename ticket channel to passeval-{username}
+  passeval: {
+    data: new SlashCommandBuilder()
+      .setName('passeval')
+      .setDescription('Mark a player as passing eval (renames this channel)')
+      .addUserOption(o => o.setName('user').setDescription('Player who passed').setRequired(true)),
+
+    async execute(interaction) {
+      if (!isStaff(interaction.member)) {
+        return interaction.reply({ content: '❌ Staff or testers only.', ephemeral: true });
+      }
+      if (!storage.findActiveSessionByChannel(interaction.channelId)) {
+        return interaction.reply({ content: '❌ This channel is not an active test session.', ephemeral: true });
+      }
+
+      const user = interaction.options.getUser('user');
+      try {
+        await interaction.channel.edit({ name: `passeval-${user.username}`.slice(0, 100) });
+        await interaction.reply({ content: `✅ <@${user.id}> has passed eval!` });
+      } catch (e) {
+        await interaction.reply({ content: `❌ Failed to rename channel: ${e.message}`, ephemeral: true });
+      }
+    },
+  },
+
   ticketpanel: {
     data: new SlashCommandBuilder()
       .setName('ticketpanel')

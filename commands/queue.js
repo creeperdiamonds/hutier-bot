@@ -5,7 +5,8 @@ const {
   ChannelType, PermissionFlagsBits,
 } = require('discord.js');
 const {
-  GAMEMODES, QUEUE_CHANNELS, QUEUE_PING_ROLES, TICKET_CATEGORY_ID, STAFF_ROLE_ID,
+  GAMEMODES, QUEUE_CHANNELS, QUEUE_PING_ROLES, TICKET_CATEGORY_ID, STAFF_ROLE_ID, GUILD_ID,
+  GAMEMODE_TESTER_ROLES, MAX_QUEUE_SIZE, MAX_TESTERS, QUEUE_REFRESH_INTERVAL,
   getGamemodeDisplay, getGamemodeColor, COOLDOWN_SECONDS,
 } = require('../config');
 const db = require('../database');
@@ -306,6 +307,19 @@ const commands = {
           allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels],
         });
       }
+      // Calling tester always gets access to their own session
+      permOverwrites.push({
+        id: interaction.user.id,
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+      });
+      // Gamemode tester role also gets access
+      const gmTesterRoleId = GAMEMODE_TESTER_ROLES[gamemode];
+      if (gmTesterRoleId) {
+        permOverwrites.push({
+          id: gmTesterRoleId,
+          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+        });
+      }
 
       try {
         const ticketChannel = await guild.channels.create({
@@ -479,6 +493,101 @@ const commands = {
     },
   },
 
+  // /closeallqueues
+  closeallqueues: {
+    data: new SlashCommandBuilder()
+      .setName('closeallqueues')
+      .setDescription('[Admin] Force-close ALL open gamemode queues'),
+
+    async execute(interaction) {
+      await interaction.deferReply({ ephemeral: true });
+      if (!isStaff(interaction.member)) {
+        return interaction.editReply('❌ Staff only.');
+      }
+
+      const closed = [];
+      for (const gm of GAMEMODES) {
+        const modeKey = gm.toLowerCase();
+        const testers = storage.getActiveTesters(modeKey);
+        if (!testers.length) continue;
+
+        storage.clearActiveTesters(modeKey);
+        storage.saveLastSession(modeKey);
+        storage.clearQueueRegion(modeKey);
+
+        const openMsg = storage.getQueueOpenMessage(modeKey);
+        if (openMsg) {
+          const { channel_id, message_id } = openMsg;
+          const ch = interaction.guild.channels.cache.get(channel_id);
+          if (ch && ch.isTextBased()) {
+            try {
+              const msg = await ch.messages.fetch(message_id);
+              await msg.edit({ embeds: [buildClosedEmbed(modeKey)], components: [] });
+              storage.saveClosedMessage(modeKey, channel_id, message_id);
+            } catch {}
+          }
+          storage.clearQueueOpenMessage(modeKey);
+        }
+
+        const players = storage.getQueue(modeKey);
+        const queueRole = await getQueueRole(interaction.guild, modeKey);
+        for (const uid of players) {
+          if (queueRole) {
+            const member = interaction.guild.members.cache.get(uid);
+            if (member) await member.roles.remove(queueRole, 'Queue force-closed').catch(() => {});
+          }
+        }
+        storage.clearQueue(modeKey);
+        closed.push(gm);
+      }
+
+      if (closed.length) {
+        await interaction.editReply(`✅ Force-closed: ${closed.join(', ')}`);
+      } else {
+        await interaction.editReply('No open queues found.');
+      }
+    },
+  },
+
+  // /viewqueue
+  viewqueue: {
+    data: new SlashCommandBuilder()
+      .setName('viewqueue')
+      .setDescription('View the current queue for a gamemode (staff/tester only)')
+      .addStringOption(o => o.setName('gamemode').setDescription('Gamemode').setRequired(true)
+        .addChoices(...GAMEMODES.map(g => ({ name: g, value: g.toLowerCase() })))),
+
+    async execute(interaction) {
+      await interaction.deferReply({ ephemeral: true });
+      const gamemode = interaction.options.getString('gamemode');
+
+      if (!isStaff(interaction.member) && !isGamemodeTester(interaction.member, gamemode)) {
+        return interaction.editReply('❌ Staff or testers only.');
+      }
+
+      const testers = storage.getActiveTesters(gamemode);
+      if (!testers.length) {
+        return interaction.editReply(`❌ The **${getGamemodeDisplay(gamemode)}** queue is not open.`);
+      }
+
+      const players = storage.getQueue(gamemode);
+      const region = storage.getQueueRegion(gamemode);
+
+      const lines = players.map((uid, i) => {
+        const linked = db.getLinkedAccount(uid);
+        const mc = linked ? linked.minecraft_name : '?';
+        return `**${i + 1}.** <@${uid}> (${mc})`;
+      });
+
+      const embed = new EmbedBuilder()
+        .setTitle(`${getGamemodeDisplay(gamemode)} Queue — ${region || '??'} (${players.length} players)`)
+        .setDescription(lines.join('\n') || 'No players in queue.')
+        .setColor(getGamemodeColor(gamemode));
+
+      await interaction.editReply({ embeds: [embed] });
+    },
+  },
+
   // /pingpanel
   pingpanel: {
     data: new SlashCommandBuilder()
@@ -569,6 +678,14 @@ async function handleRegionSelect(interaction) {
 
   const existingTesters = storage.getActiveTesters(gamemode);
   const queueAlreadyOpen = existingTesters.length > 0;
+
+  if (existingTesters.length >= MAX_TESTERS) {
+    await interaction.update({
+      content: `❌ The **${getGamemodeDisplay(gamemode)}** queue already has the maximum of **${MAX_TESTERS}** testers.`,
+      components: [],
+    });
+    return true;
+  }
 
   storage.addActiveTester(gamemode, interaction.user.id);
   storage.setQueueRegion(gamemode, region);
@@ -663,6 +780,15 @@ async function handleQueueJoin(interaction) {
   const players = storage.getQueue(gamemode);
   if (players.includes(String(interaction.user.id))) {
     await interaction.reply({ content: '❌ You\'re already in the queue!', ephemeral: true });
+    return true;
+  }
+
+  // Queue full?
+  if (players.length >= MAX_QUEUE_SIZE) {
+    await interaction.reply({
+      content: `❌ The **${getGamemodeDisplay(gamemode)}** queue is full (**${MAX_QUEUE_SIZE}** slots).`,
+      ephemeral: true,
+    });
     return true;
   }
 
@@ -875,9 +1001,24 @@ function loadState() {
   // No-op: state is now fully persisted in data.json via storage functions
 }
 
+function startBackgroundTasks(client) {
+  if (QUEUE_REFRESH_INTERVAL <= 0) return;
+  setInterval(async () => {
+    const guild = GUILD_ID ? client.guilds.cache.get(GUILD_ID) : client.guilds.cache.first();
+    if (!guild) return;
+    for (const gm of GAMEMODES) {
+      const modeKey = gm.toLowerCase();
+      if (!storage.getActiveTesters(modeKey).length) continue;
+      await refreshPublicEmbed(modeKey, client, guild).catch(() => {});
+    }
+  }, QUEUE_REFRESH_INTERVAL * 1000);
+  console.log(`[Queue] Background refresh started (every ${QUEUE_REFRESH_INTERVAL}s)`);
+}
+
 module.exports = {
   commands,
   loadState,
+  startBackgroundTasks,
   handleMemberLeave,
   handleQueueOpen,
   handleRegionSelect,

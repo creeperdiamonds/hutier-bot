@@ -14,6 +14,9 @@ const WEBSITE_URL = (process.env.WEBSITE_URL || '').replace(/\/$/, '');
 const BOT_API_KEY = process.env.BOT_API_KEY || '';
 const DB_PATH = process.env.DB_PATH || require('path').join(__dirname, '..', 'tierlist.db');
 const COOLDOWN_SECONDS = parseInt(process.env.COOLDOWN_SECONDS || String(30 * 24 * 60 * 60), 10);
+const MAX_QUEUE_SIZE = parseInt(process.env.MAX_QUEUE_SIZE || '20', 10);
+const MAX_TESTERS = parseInt(process.env.MAX_TESTERS || '5', 10);
+const QUEUE_REFRESH_INTERVAL = parseInt(process.env.QUEUE_REFRESH_INTERVAL || '30', 10);
 const TEST_LOGS_CHANNEL_ID = process.env.TEST_LOGS_CHANNEL_ID || '';
 const LINK_CODE_LENGTH = 8;
 const LINK_CODE_EXPIRY_MINUTES = 10;
@@ -203,6 +206,9 @@ module.exports = {
   DISCORD_TOKEN,
   GUILD_ID,
   STAFF_ROLE_ID,
+  MAX_QUEUE_SIZE,
+  MAX_TESTERS,
+  QUEUE_REFRESH_INTERVAL,
   EXTRA_STAFF_ROLE_IDS,
   ALLOWED_USER_IDS,
   TICKET_CATEGORY_ID,

@@ -74,6 +74,7 @@ client.once(Events.ClientReady, async (c) => {
   initDb();
   await registerCommands();
   queueModule.loadState();
+  queueModule.startBackgroundTasks(c);
   await startServer(c);
 
   // Run migration if a sync channel exists (deletes itself when done)
