@@ -593,6 +593,39 @@ def get_pending_link_code(discord_id: int) -> Optional[str]:
     return None
 
 
+# ACTIVE SESSIONS (in-memory, per-gamemode)
+_ACTIVE_SESSIONS: dict = {}
+
+
+def set_active_session(gamemode: str, tester_id: int, player_id: int, channel_id: int) -> None:
+    _ACTIVE_SESSIONS[gamemode] = {
+        "tester_id": tester_id,
+        "player_id": player_id,
+        "channel_id": channel_id,
+    }
+
+
+def get_active_session(gamemode: str) -> Optional[dict]:
+    return _ACTIVE_SESSIONS.get(gamemode)
+
+
+def clear_active_session(gamemode: str) -> None:
+    _ACTIVE_SESSIONS.pop(gamemode, None)
+
+
+# QUEUE LAST SESSION (in-memory, per-gamemode)
+_QUEUE_LAST_SESSIONS: dict = {}
+
+
+def save_queue_last_session(gamemode: str) -> None:
+    import datetime
+    _QUEUE_LAST_SESSIONS[gamemode] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+
+def get_queue_last_session(gamemode: str) -> Optional[str]:
+    return _QUEUE_LAST_SESSIONS.get(gamemode)
+
+
 # BAN SYSTEM
 def _load_ban_data() -> Dict[str, Any]:
     if not os.path.exists("bans.json"):
