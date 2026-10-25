@@ -33,6 +33,11 @@ MINECRAFT_API_URL = os.getenv("MINECRAFT_API_URL", "http://localhost:8080").rstr
 
 WIPE_GLOBAL_COMMANDS = os.getenv("WIPE_GLOBAL_COMMANDS", "0") == "1"
 
+# Channel where monthly tester quota report is posted
+MONTHLY_REPORT_CHANNEL_ID = int(os.getenv("MONTHLY_REPORT_CHANNEL_ID", "0"))
+# Channel where ticket transcripts are posted
+TRANSCRIPT_CHANNEL_ID = int(os.getenv("TRANSCRIPT_CHANNEL_ID", "0"))
+
 COOLDOWN_SECONDS = 30 * 24 * 60 * 60
 DATA_FILE = "data.json"
 

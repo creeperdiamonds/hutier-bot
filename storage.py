@@ -698,3 +698,125 @@ def unban_player(username: str) -> bool:
         _save_ban_data(data)
         return True
     return False
+
+
+# TESTING TICKET METADATA
+
+def register_ticket(channel_id: int, player_id: int, tester_id: int, gamemode: str, embed_msg_id: int = 0) -> None:
+    data = _load_data()
+    data.setdefault("testing_tickets", {})[str(channel_id)] = {
+        "player_id": player_id,
+        "tester_id": tester_id,
+        "gamemode": gamemode,
+        "created_at": time.time(),
+        "exempt": False,
+        "warning_sent": False,
+        "embed_msg_id": embed_msg_id,
+    }
+    _save_data(data)
+
+
+def get_ticket_meta(channel_id: int) -> Optional[Dict[str, Any]]:
+    data = _load_data()
+    return data.get("testing_tickets", {}).get(str(channel_id))
+
+
+def set_ticket_exempt(channel_id: int, exempt: bool = True) -> None:
+    data = _load_data()
+    tickets = data.setdefault("testing_tickets", {})
+    if str(channel_id) in tickets:
+        tickets[str(channel_id)]["exempt"] = exempt
+        _save_data(data)
+
+
+def set_ticket_warning_sent(channel_id: int) -> None:
+    data = _load_data()
+    tickets = data.setdefault("testing_tickets", {})
+    if str(channel_id) in tickets:
+        tickets[str(channel_id)]["warning_sent"] = True
+        _save_data(data)
+
+
+def remove_ticket(channel_id: int) -> None:
+    data = _load_data()
+    data.setdefault("testing_tickets", {}).pop(str(channel_id), None)
+    _save_data(data)
+
+
+def get_all_tickets() -> Dict[str, Any]:
+    data = _load_data()
+    return data.get("testing_tickets", {})
+
+
+def update_ticket_embed_msg(channel_id: int, embed_msg_id: int) -> None:
+    data = _load_data()
+    tickets = data.setdefault("testing_tickets", {})
+    if str(channel_id) in tickets:
+        tickets[str(channel_id)]["embed_msg_id"] = embed_msg_id
+        _save_data(data)
+
+
+# TESTER STATS
+
+def increment_tester_stat(tester_id: int, gamemode: str) -> None:
+    data = _load_data()
+    stats = data.setdefault("tester_stats", {})
+    tester = stats.setdefault(str(tester_id), {"monthly": {}, "alltime": {}})
+    tester["monthly"][gamemode] = tester["monthly"].get(gamemode, 0) + 1
+    tester["alltime"][gamemode] = tester["alltime"].get(gamemode, 0) + 1
+    _save_data(data)
+
+
+def get_tester_stats(tester_id: int) -> Dict[str, Any]:
+    data = _load_data()
+    return data.get("tester_stats", {}).get(str(tester_id), {"monthly": {}, "alltime": {}})
+
+
+def get_all_tester_stats() -> Dict[str, Any]:
+    data = _load_data()
+    return data.get("tester_stats", {})
+
+
+def get_leaderboard(stat_type: str = "monthly") -> List[Dict[str, Any]]:
+    """Returns list of {tester_id, total} sorted descending."""
+    all_stats = get_all_tester_stats()
+    result = []
+    for tester_id_str, stats in all_stats.items():
+        counts = stats.get(stat_type, {})
+        total = sum(counts.values())
+        if total > 0:
+            result.append({"tester_id": int(tester_id_str), "total": total, "breakdown": counts})
+    result.sort(key=lambda x: x["total"], reverse=True)
+    return result
+
+
+def reset_monthly_stats() -> None:
+    data = _load_data()
+    stats = data.get("tester_stats", {})
+    for tester_id_str in stats:
+        stats[tester_id_str]["monthly"] = {}
+    _save_data(data)
+
+
+# MONTHLY QUOTA
+
+def get_monthly_quota() -> int:
+    data = _load_data()
+    return data.get("monthly_quota", 5)
+
+
+def set_monthly_quota(n: int) -> None:
+    data = _load_data()
+    data["monthly_quota"] = n
+    _save_data(data)
+
+
+def get_monthly_quota_last_check() -> str:
+    data = _load_data()
+    return data.get("monthly_quota_last_check", "")
+
+
+def set_monthly_quota_last_check(month_str: str) -> None:
+    data = _load_data()
+    data["monthly_quota_last_check"] = month_str
+    _save_data(data)

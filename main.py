@@ -12,7 +12,7 @@ from discord.ext import commands
 import api
 import database
 import cogs.queue as queue_module
-from config import DISCORD_TOKEN, GUILD_ID
+from config import DISCORD_TOKEN, GUILD_ID, TICKET_TYPES
 from cogs.queue import rebuild_queue_message_ids
 from cogs.tickets import CloseTicketView, TicketPanelView
 from cogs.queue import QueueActionView, QueuePanelView, PingPanelView
@@ -40,12 +40,16 @@ async def on_ready():
         bot.add_view(TicketPanelView())
         bot.add_view(CloseTicketView(owner_id=0, mode_key=""))
         bot.add_view(QueuePanelView())
-        bot.add_view(QueueActionView())
         bot.add_view(PingPanelView())
+        # Register persistent queue action views for every gamemode
+        for _label, _key, _rid in TICKET_TYPES:
+            bot.add_view(QueueActionView(_key))
 
         await _restore_queue_state()
         await _sync_commands()
         asyncio.create_task(queue_module.queue_maintenance_task())
+        asyncio.create_task(queue_module.ticket_lifecycle_task())
+        asyncio.create_task(queue_module.monthly_quota_task())
 
         bot._startup_completed = True
 

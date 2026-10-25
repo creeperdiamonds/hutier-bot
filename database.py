@@ -3,7 +3,18 @@ import asyncio
 import aiosqlite
 from typing import Dict, Any, List, Optional
 
-DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "tierlist.db"))
+USE_SUPABASE_API = False
+db_pool = None
+
+
+def supabase_select_sync(table: str, filters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+    return []
+
+
+def supabase_insert_sync(table: str, data: Dict[str, Any]) -> bool:
+    return False
+
+DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "tierlist.db"))
 
 _db: aiosqlite.Connection | None = None
 
@@ -49,6 +60,26 @@ async def init_db():
             used INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_pending_code ON pending_codes(code);
+
+        CREATE TABLE IF NOT EXISTS testing_tickets (
+            channel_id INTEGER PRIMARY KEY,
+            player_id INTEGER NOT NULL,
+            tester_id INTEGER NOT NULL,
+            gamemode TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            exempt INTEGER DEFAULT 0,
+            warning_sent INTEGER DEFAULT 0,
+            embed_msg_id INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS tester_stats (
+            discord_id INTEGER NOT NULL,
+            gamemode TEXT NOT NULL,
+            monthly_count INTEGER DEFAULT 0,
+            alltime_count INTEGER DEFAULT 0,
+            last_reset TEXT,
+            PRIMARY KEY (discord_id, gamemode)
+        );
     """)
     await _db.commit()
     print(f"Database initialized: {DB_PATH}")
